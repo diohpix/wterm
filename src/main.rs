@@ -1,4 +1,4 @@
-// 터미널 애플리케이션 코드 복원 - create_double_consonant + compose_korean 사용
+// 터미널 애플리케이션 코드 복원 - 한글 조합 지원
 use anyhow::Result;
 use eframe::egui;
 use portable_pty::{CommandBuilder, PtySize};
@@ -50,7 +50,7 @@ impl Default for TerminalCell {
 
 // 한글 입력 관련 상수
 const KOREAN_BASE: u32 = 0xAC00;
-const CHOSUNG_COUNT: u32 = 19;
+
 const JUNGSUNG_COUNT: u32 = 21;
 const JONGSUNG_COUNT: u32 = 28;
 
@@ -180,19 +180,7 @@ fn compose_korean(chosung: u32, jungsung: u32, jongsung: u32) -> char {
     char::from_u32(code).unwrap_or('?')
 }
 
-// 한글 문자 분해
-fn decompose_korean(ch: char) -> Option<(u32, u32, u32)> {
-    let code = ch as u32;
-    if code >= KOREAN_BASE && code < KOREAN_BASE + CHOSUNG_COUNT * JUNGSUNG_COUNT * JONGSUNG_COUNT {
-        let base = code - KOREAN_BASE;
-        let chosung = base / (JUNGSUNG_COUNT * JONGSUNG_COUNT);
-        let jungsung = (base % (JUNGSUNG_COUNT * JONGSUNG_COUNT)) / JONGSUNG_COUNT;
-        let jongsung = base % JONGSUNG_COUNT;
-        Some((chosung, jungsung, jongsung))
-    } else {
-        None
-    }
-}
+
 
 // 자음 여부 확인
 fn is_consonant(ch: char) -> bool {
@@ -283,10 +271,7 @@ impl KoreanInputState {
         }
     }
 
-    // 조합 완료 여부 확인
-    fn is_complete(&self) -> bool {
-        self.chosung.is_some() && self.jungsung.is_some()
-    }
+
 
     // 백스페이스 처리 - 단계별로 조합 되돌리기
     fn handle_backspace(&mut self) -> bool {
@@ -328,9 +313,7 @@ struct TerminalState {
     cols: usize,
     current_color: AnsiColor,        // 현재 색상 상태
 
-    consecutive_backspaces: usize,   // Track consecutive backspaces to prevent mass deletion
     arrow_key_pressed: bool,         // Track if arrow key was recently pressed
-    preserve_line: bool,             // Preserve current line content during line editing
     arrow_key_time: Option<Instant>, // When arrow key was last pressed
     // Alternative screen buffer support
     main_buffer: Vec<Vec<TerminalCell>>, // Main screen buffer
@@ -352,9 +335,7 @@ impl TerminalState {
             rows,
             cols,
             current_color: AnsiColor::default(),
-            consecutive_backspaces: 0,
             arrow_key_pressed: false,
-            preserve_line: false,
             arrow_key_time: None,
             main_buffer,
             alt_buffer,
@@ -380,32 +361,45 @@ impl TerminalState {
             return;
         }
 
-        // Resize all buffers
-        self.buffer
-            .resize(new_rows, vec![TerminalCell::default(); new_cols]);
-        for row in &mut self.buffer {
-            row.resize(new_cols, TerminalCell::default());
-        }
-
-        self.main_buffer
-            .resize(new_rows, vec![TerminalCell::default(); new_cols]);
-        for row in &mut self.main_buffer {
-            row.resize(new_cols, TerminalCell::default());
-        }
-
-        self.alt_buffer
-            .resize(new_rows, vec![TerminalCell::default(); new_cols]);
-        for row in &mut self.alt_buffer {
-            row.resize(new_cols, TerminalCell::default());
-        }
+        let old_rows = self.rows;
+        let old_cols = self.cols;
 
         // Update dimensions
         self.rows = new_rows;
         self.cols = new_cols;
 
-        // Adjust cursor position if necessary
-        self.cursor_row = self.cursor_row.min(new_rows - 1);
-        self.cursor_col = self.cursor_col.min(new_cols - 1);
+        // Process each buffer
+        let process_buffer = |buf: &mut Vec<Vec<TerminalCell>>, saved_cursor: &mut (usize, usize)| {
+            let copy_rows = new_rows.min(old_rows);
+            let copy_cols = new_cols.min(old_cols);
+
+            let row_offset = old_rows.saturating_sub(new_rows);
+
+            let mut new_buf = vec![vec![TerminalCell::default(); new_cols]; new_rows];
+
+            for r in 0..copy_rows {
+                let old_r = row_offset + r;
+                for c in 0..copy_cols {
+                    new_buf[r][c] = std::mem::replace(&mut buf[old_r][c], TerminalCell::default());
+                }
+            }
+
+            *buf = new_buf;
+
+            // Adjust saved cursor
+            *saved_cursor = (
+                saved_cursor.0.saturating_sub(row_offset).min(new_rows.saturating_sub(1)),
+                saved_cursor.1.min(new_cols.saturating_sub(1)),
+            );
+        };
+
+        process_buffer(&mut self.buffer, &mut (0, 0));  // Current buffer doesn't have saved, but skip
+        process_buffer(&mut self.main_buffer, &mut self.saved_cursor_main);
+        process_buffer(&mut self.alt_buffer, &mut self.saved_cursor_alt);
+
+        // Adjust current cursor
+        self.cursor_row = self.cursor_row.saturating_sub(old_rows.saturating_sub(new_rows)).min(new_rows.saturating_sub(1));
+        self.cursor_col = self.cursor_col.min(new_cols.saturating_sub(1));
     }
 
     fn put_char(&mut self, ch: char) {
@@ -537,14 +531,12 @@ impl TerminalState {
     // Set arrow key protection with current timestamp
     fn set_arrow_key_protection(&mut self) {
         self.arrow_key_pressed = true;
-        self.preserve_line = true;
         self.arrow_key_time = Some(Instant::now());
     }
 
     // Clear arrow key protection
     fn clear_arrow_key_protection(&mut self) {
         self.arrow_key_pressed = false;
-        self.preserve_line = false;
         self.arrow_key_time = None;
     }
 
@@ -580,41 +572,7 @@ impl TerminalState {
         }
     }
 
-    fn clear_from_cursor_to_end(&mut self) {
-        // Only clear from cursor position to end of current line
-        // Don't clear the lines below if there's already content there
-        if self.cursor_row < self.buffer.len() {
-            for col in self.cursor_col..self.cols {
-                if col < self.buffer[self.cursor_row].len() {
-                    self.buffer[self.cursor_row][col] = TerminalCell::default();
-                }
-            }
-        }
-        // Only clear empty lines below, not lines with content
-        // This prevents clearing ls output when zsh redraws its prompt
-    }
 
-    fn clear_from_start_to_cursor(&mut self) {
-        // Clear all lines above current line
-        for row in 0..=self.cursor_row {
-            let end_col = if row == self.cursor_row {
-                self.cursor_col
-            } else {
-                self.cols - 1
-            };
-            for col in 0..=end_col {
-                if row < self.buffer.len() && col < self.buffer[row].len() {
-                    self.buffer[row][col] = TerminalCell::default();
-                }
-            }
-        }
-        // Clear from start of current line to cursor
-        for col in 0..=self.cursor_col.min(self.cols.saturating_sub(1)) {
-            if self.cursor_row < self.buffer.len() {
-                self.buffer[self.cursor_row][col] = TerminalCell::default();
-            }
-        }
-    }
 }
 
 // VTE Performer implementation
@@ -735,21 +693,17 @@ impl Perform for TerminalPerformer {
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
         if let Ok(mut state) = self.state.lock() {
-            // Check if arrow key protection is still active
-            let should_protect = state.should_protect_from_arrow_key();
-
             // Debug: Print CSI commands to understand what's happening
             let param_values: Vec<u16> = params
                 .iter()
                 .map(|p| p.first().copied().unwrap_or(0))
                 .collect();
             println!(
-                "CSI: '{}' params:{:?} protected:{} arrow_pressed:{}",
-                c, param_values, should_protect, state.arrow_key_pressed
+                "CSI: '{}' params:{:?} arrow_pressed:{}",
+                c, param_values, state.arrow_key_pressed
             );
 
             // Copy values we need before the match to avoid borrowing issues
-            let cursor_row = state.cursor_row;
             let cols = state.cols;
             let rows = state.rows;
 
@@ -1628,14 +1582,7 @@ impl eframe::App for TerminalApp {
             // Handle keyboard input when terminal has focus
             let has_focus = ui.memory(|mem| mem.has_focus(terminal_response.inner.id));
             
-            // Only log focus state changes
-            static mut LAST_FOCUS_STATE: bool = false;
-            unsafe {
-                if LAST_FOCUS_STATE != has_focus {
-                    println!("🔍 DEBUG: Terminal focus changed: {} -> {}", LAST_FOCUS_STATE, has_focus);
-                    LAST_FOCUS_STATE = has_focus;
-                }
-            }
+
 
             // Handle Tab key with raw event processing and debouncing
             let tab_handled = ctx.input_mut(|i| {
@@ -2103,8 +2050,7 @@ impl eframe::App for TerminalApp {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1024.0, 768.0])
