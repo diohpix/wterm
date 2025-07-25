@@ -327,7 +327,7 @@ struct TerminalState {
     rows: usize,
     cols: usize,
     current_color: AnsiColor,        // 현재 색상 상태
-    consecutive_spaces: usize,       // Track consecutive spaces to prevent mass clearing
+
     consecutive_backspaces: usize,   // Track consecutive backspaces to prevent mass deletion
     arrow_key_pressed: bool,         // Track if arrow key was recently pressed
     preserve_line: bool,             // Preserve current line content during line editing
@@ -352,7 +352,6 @@ impl TerminalState {
             rows,
             cols,
             current_color: AnsiColor::default(),
-            consecutive_spaces: 0,
             consecutive_backspaces: 0,
             arrow_key_pressed: false,
             preserve_line: false,
@@ -413,17 +412,7 @@ impl TerminalState {
         // Reset arrow key state when adding new text
         self.clear_arrow_key_protection();
 
-        // Detect and limit consecutive spaces to prevent mass clearing by shells
-        if ch == ' ' {
-            self.consecutive_spaces += 1;
-            // More aggressive filtering - only allow a few consecutive spaces
-            if self.consecutive_spaces > 5 {
-                // Ignore mass space clearing attempts
-                return;
-            }
-        } else {
-            self.consecutive_spaces = 0; // Reset counter for non-space characters
-        }
+
 
         // Get the display width of the character
         let char_width = ch.width().unwrap_or(1);
@@ -464,7 +453,6 @@ impl TerminalState {
 
         self.cursor_row += 1;
         self.cursor_col = 0;
-        self.consecutive_spaces = 0; // Reset on new line
         if self.cursor_row >= self.rows {
             // Scroll up
             self.buffer.remove(0);
@@ -479,27 +467,51 @@ impl TerminalState {
 
     fn backspace(&mut self) {
         if self.cursor_col > 0 {
-            // Move cursor back to find the character to delete
-            let mut delete_col = self.cursor_col - 1;
-
-            // If we're on a continuation marker (\u{0000}), move back to the actual character
-            while delete_col > 0 && self.buffer[self.cursor_row][delete_col].ch == '\u{0000}' {
-                delete_col -= 1;
-            }
-
-            // Get the character we're about to delete
-            let ch_to_delete = self.buffer[self.cursor_row][delete_col].ch;
-            let char_width = ch_to_delete.width().unwrap_or(1);
-
-            // Clear the character and any continuation markers
-            for i in 0..char_width {
-                if delete_col + i < self.cols {
-                    self.buffer[self.cursor_row][delete_col + i] = TerminalCell::default();
+            // Find prompt end to prevent deleting into prompt area
+            let mut prompt_end = 0;
+            if self.cursor_row < self.buffer.len() {
+                let row = &self.buffer[self.cursor_row];
+                // Find prompt end: "~ " or "✗ " pattern
+                for i in 0..row.len().saturating_sub(1) {
+                    if (row[i].ch == '~' || row[i].ch == '✗') && row[i + 1].ch == ' ' {
+                        prompt_end = i + 2; // Position after "~ " or "✗ "
+                        break;
+                    }
                 }
             }
 
-            // Move cursor to the position of the deleted character
-            self.cursor_col = delete_col;
+            // Only allow backspace if cursor is beyond prompt area
+            if self.cursor_col > prompt_end {
+                // Move cursor back to find the character to delete
+                let mut delete_col = self.cursor_col - 1;
+
+                // If we're on a continuation marker (\u{0000}), move back to the actual character
+                while delete_col > 0 && self.buffer[self.cursor_row][delete_col].ch == '\u{0000}' {
+                    delete_col -= 1;
+                }
+
+                // Double-check we're still in user input area after finding the actual character
+                if delete_col >= prompt_end {
+                    // Get the character we're about to delete
+                    let ch_to_delete = self.buffer[self.cursor_row][delete_col].ch;
+                    let char_width = ch_to_delete.width().unwrap_or(1);
+
+                    // Clear the character and any continuation markers
+                    for i in 0..char_width {
+                        if delete_col + i < self.cols {
+                            self.buffer[self.cursor_row][delete_col + i] = TerminalCell::default();
+                        }
+                    }
+
+                    // Move cursor to the position of the deleted character
+                    self.cursor_col = delete_col;
+                    println!("🔄 Backspace: cursor {} -> {} (prompt_end: {})", self.cursor_col + char_width, self.cursor_col, prompt_end);
+                } else {
+                    println!("🚫 Backspace blocked: would delete prompt area (delete_col: {}, prompt_end: {})", delete_col, prompt_end);
+                }
+            } else {
+                println!("🚫 Backspace blocked: cursor at prompt area (cursor: {}, prompt_end: {})", self.cursor_col, prompt_end);
+            }
         }
     }
 
@@ -642,12 +654,25 @@ impl Perform for TerminalPerformer {
                     state.carriage_return();
                 }
                 b'\x08' => {
-                    // Backspace - block if arrow key was recently pressed
+                    // Backspace (Ctrl+H) - block if arrow key was recently pressed or would enter prompt
                     if state.should_protect_from_arrow_key() {
-                        println!("🚫 Backspace (blocked - arrow key protection active)");
-                    } else if state.cursor_col > 0 {
-                        println!("⬅️ Backspace (allowed)");
-                        state.backspace();
+                        println!("🚫 Backspace \\x08 (blocked - arrow key protection active)");
+                    } else {
+                        println!("⬅️ Backspace \\x08 (processing with prompt protection)");
+                        state.backspace(); // Now has prompt protection built-in
+                    }
+                }
+                b'\x09' => {
+                    // Tab character - move cursor to next tab stop (every 8 columns)
+                    println!("🔄 Tab character received from PTY");
+                    let next_tab_stop = ((state.cursor_col / 8) + 1) * 8;
+                    if next_tab_stop < state.cols {
+                        state.cursor_col = next_tab_stop;
+                        println!("🔄 Tab: cursor moved to column {}", state.cursor_col);
+                    } else {
+                        // If tab would go beyond line, go to end of line
+                        state.cursor_col = state.cols - 1;
+                        println!("🔄 Tab: cursor moved to end of line ({})", state.cursor_col);
                     }
                 }
                 b'\x0c' => {
@@ -657,12 +682,12 @@ impl Perform for TerminalPerformer {
                     println!("🧹 Form Feed - screen cleared");
                 }
                 b'\x7f' => {
-                    // DEL character - block if arrow key was recently pressed
+                    // DEL character - block if arrow key was recently pressed or would enter prompt
                     if state.should_protect_from_arrow_key() {
-                        println!("🚫 DEL (blocked - arrow key protection active)");
-                    } else if state.cursor_col > 0 {
-                        println!("🗑️ DEL (allowed)");
-                        state.backspace();
+                        println!("🚫 DEL \\x7f (blocked - arrow key protection active)");
+                    } else {
+                        println!("🗑️ DEL \\x7f (processing with prompt protection)");
+                        state.backspace(); // Now has prompt protection built-in
                     }
                 }
                 _ => {
@@ -1058,6 +1083,7 @@ pub struct TerminalApp {
     pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pty_master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     korean_state: KoreanInputState,
+    last_tab_time: Option<Instant>,  // Tab key debouncing
 }
 
 impl TerminalApp {
@@ -1280,6 +1306,7 @@ impl TerminalApp {
             pty_writer,
             pty_master,
             korean_state: KoreanInputState::new(),
+            last_tab_time: None,
         })
     }
 
@@ -1377,10 +1404,10 @@ impl eframe::App for TerminalApp {
                         let content_height = state.rows as f32 * line_height;
                         let content_width = state.cols as f32 * char_width;
 
-                        // Allocate exact space needed for terminal content
+                        // Allocate exact space needed for terminal content with keyboard focus
                         let (response, painter) = ui.allocate_painter(
                             egui::Vec2::new(content_width, content_height),
-                            egui::Sense::click(),
+                            egui::Sense::click_and_drag().union(egui::Sense::focusable_noninteractive()),
                         );
 
                         // Draw terminal background (macOS Terminal style black background)
@@ -1390,10 +1417,24 @@ impl eframe::App for TerminalApp {
                             egui::Color32::BLACK,
                         );
 
-                        // Request focus when clicked
+                        // Request focus when clicked and claim keyboard input
                         if response.clicked() {
+                            println!("🔍 DEBUG: Terminal clicked - requesting focus (ID: {:?})", response.id);
                             ui.memory_mut(|mem| mem.request_focus(response.id));
                         }
+                        
+                        // Always try to maintain focus on the terminal
+                        if response.hovered() || response.has_focus() {
+                            ui.memory_mut(|mem| mem.request_focus(response.id));
+                        }
+                        
+                        // Force focus when any interaction happens
+                        let interaction = response.interact(egui::Sense::click_and_drag());
+                        if interaction.clicked || interaction.dragged || interaction.hovered() {
+                            ui.memory_mut(|mem| mem.request_focus(response.id));
+                        }
+                        
+                        // If focused, we will handle keyboard input in the event loop
 
                         // Terminal rendering without debug output
 
@@ -1586,9 +1627,99 @@ impl eframe::App for TerminalApp {
 
             // Handle keyboard input when terminal has focus
             let has_focus = ui.memory(|mem| mem.has_focus(terminal_response.inner.id));
+            
+            // Only log focus state changes
+            static mut LAST_FOCUS_STATE: bool = false;
+            unsafe {
+                if LAST_FOCUS_STATE != has_focus {
+                    println!("🔍 DEBUG: Terminal focus changed: {} -> {}", LAST_FOCUS_STATE, has_focus);
+                    LAST_FOCUS_STATE = has_focus;
+                }
+            }
+
+            // Handle Tab key with raw event processing and debouncing
+            let tab_handled = ctx.input_mut(|i| {
+                let mut tab_press_found = false;
+                let mut tab_release_found = false;
+                
+                // Debug: Count total events and Tab events
+                let total_events = i.events.len();
+                let mut tab_events = 0;
+                
+                // Process all events and consume Tab events to prevent UI focus changes
+                i.events.retain(|event| {
+                    match event {
+                        egui::Event::Key { key: egui::Key::Tab, pressed: true, .. } => {
+                            tab_events += 1;
+                            tab_press_found = true;
+                            println!("🔍 DEBUG: Tab key PRESS detected! (focus: {}, event #{}/{})", has_focus, tab_events, total_events);
+                            false // Always consume Tab events to prevent focus changes
+                        }
+                        egui::Event::Key { key: egui::Key::Tab, pressed: false, .. } => {
+                            tab_events += 1;
+                            tab_release_found = true;
+                            println!("🔍 DEBUG: Tab key RELEASE detected! (event #{}/{}) - NOT SENDING", tab_events, total_events);
+                            false // Also consume Tab release events
+                        }
+                        egui::Event::Key { key, pressed, .. } => {
+                            if *key == egui::Key::I {
+                                println!("🔍 DEBUG: I key event - key:{:?} pressed:{}", key, pressed);
+                            }
+                            true
+                        }
+                        _ => true
+                    }
+                });
+                
+                // Only handle Tab PRESS, ignore RELEASE to prevent duplicate sending
+                if tab_press_found {
+                    println!("✅ Tab PRESS detected - will send to PTY");
+                    true
+                } else if tab_release_found {
+                    println!("🚫 Tab RELEASE detected - IGNORING to prevent duplicate");
+                    false  // Don't handle release to prevent duplicate
+                } else {
+                    // Only log when no Tab events in busy periods
+                    if total_events > 0 && tab_events == 0 && total_events < 3 {
+                        println!("🔍 DEBUG: {} events processed, but no Tab events found", total_events);
+                    }
+                    false
+                }
+            });
+            
+            // Send Tab to PTY with debouncing (only if enough time has passed since last Tab)
+            if tab_handled {
+                let now = Instant::now();
+                let should_send = if let Some(last_time) = self.last_tab_time {
+                    let elapsed = now.duration_since(last_time).as_millis();
+                    println!("🔍 DEBUG: Tab debounce check - elapsed: {}ms", elapsed);
+                    elapsed > 100 // 100ms debounce (reduced from 200ms)
+                } else {
+                    println!("🔍 DEBUG: First Tab key press");
+                    true // First Tab key
+                };
+                
+                if should_send {
+                    println!("📤 Sending Tab for auto-completion (focus was: {})", has_focus);
+                    // Ensure terminal has focus before and after sending Tab
+                    ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
+                    self.finalize_korean_composition();
+                    self.send_to_pty("\t");
+                    self.last_tab_time = Some(now);
+                    // Force focus again after sending Tab to prevent losing focus
+                    ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
+                    println!("✅ Tab sent successfully, focus maintained");
+                } else {
+                    println!("🚫 Tab debounced (too frequent - try again in {}ms)", 100 - now.duration_since(self.last_tab_time.unwrap()).as_millis());
+                }
+            }
 
             // Handle ESC key specially using direct input check
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                println!("🔍 DEBUG: ESC key pressed (focus was: {}, composing: {})", has_focus, self.korean_state.is_composing);
+                // Ensure terminal has focus
+                ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
+                
                 if self.korean_state.is_composing {
                     // 조합 중이면 조합만 완성하고 ESC는 무시
                     self.finalize_korean_composition();
@@ -1596,12 +1727,62 @@ impl eframe::App for TerminalApp {
                     // 조합 중이 아니면 정상적으로 ESC 처리
                     self.send_to_pty("\x1b");
                 }
-                // Force maintain focus after ESC
-                ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
+            }
+
+            // Check for Ctrl+I as Tab alternative (with debouncing)
+            if ctx.input(|i| i.key_pressed(egui::Key::I) && i.modifiers.ctrl) {
+                let now = Instant::now();
+                let should_send = if let Some(last_time) = self.last_tab_time {
+                    let elapsed = now.duration_since(last_time).as_millis();
+                    println!("🔍 DEBUG: Ctrl+I debounce check - elapsed: {}ms", elapsed);
+                    elapsed > 100 // 100ms debounce (reduced from 200ms)
+                } else {
+                    println!("🔍 DEBUG: First Ctrl+I key press");
+                    true // First Ctrl+I
+                };
+                
+                if should_send {
+                    println!("📤 Ctrl+I detected - sending as Tab for auto-completion (focus was: {})", has_focus);
+                    // Ensure terminal has focus before and after sending Tab
+                    ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
+                    self.finalize_korean_composition();
+                    self.send_to_pty("\t");
+                    self.last_tab_time = Some(now);
+                    // Force focus again after sending Tab to prevent losing focus
+                    ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
+                    println!("✅ Ctrl+I sent successfully, focus maintained");
+                } else {
+                    println!("🚫 Ctrl+I debounced (too frequent - try again in {}ms)", 100 - now.duration_since(self.last_tab_time.unwrap()).as_millis());
+                }
             }
 
             if has_focus {
                 ctx.input(|i| {
+                    // Debug: Log events only when relevant
+                    let total_events = i.events.len();
+                    if total_events > 0 && total_events < 3 {
+                        println!("🔍 DEBUG: Processing {} input events in key handler", total_events);
+                    }
+                    
+                    for event in &i.events {
+                        match event {
+                            egui::Event::Key { key, pressed, modifiers, .. } => {
+                                if *key == egui::Key::Tab {
+                                    println!("🔍 DEBUG: Tab key in key handler - key:{:?} pressed:{} modifiers:{:?}", key, pressed, modifiers);
+                                }
+                                if *key == egui::Key::I && modifiers.ctrl {
+                                    println!("🔍 DEBUG: Ctrl+I key event detected - key:{:?} pressed:{} modifiers:{:?}", key, pressed, modifiers);
+                                }
+                            }
+                            egui::Event::Text(text) => {
+                                if text.contains('\t') {
+                                    println!("🔍 DEBUG: Tab character in text event: {:?}", text);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    
                     for event in &i.events {
                         match event {
                             egui::Event::Key {
@@ -1610,6 +1791,14 @@ impl eframe::App for TerminalApp {
                                 modifiers,
                                 ..
                             } => {
+                                // Skip Tab keys completely - they're handled above
+                                if *key == egui::Key::Tab {
+                                    println!("🔍 DEBUG: Tab key in key handler (SKIPPED - handled above)");
+                                    continue;
+                                }
+                                
+                                // Debug: Log all other key events
+                                println!("🔑 Key event: {:?} (modifiers: {:?})", key, modifiers);
                                 // Handle keys that should finalize Korean composition
                                 match key {
                                     egui::Key::Enter => {
@@ -1625,12 +1814,7 @@ impl eframe::App for TerminalApp {
                                         // Just finalize Korean composition if any
                                         self.finalize_korean_composition();
                                     }
-                                    egui::Key::Tab => {
-                                        // Tab might also be handled by Text event, but we handle it here
-                                        // since it's a special control character
-                                        self.finalize_korean_composition();
-                                        self.send_to_pty("\t");
-                                    }
+                                    // Tab is handled above - no case needed here
 
                                     egui::Key::Backspace => {
                                         // Handle backspace for Korean composition
@@ -1639,17 +1823,19 @@ impl eframe::App for TerminalApp {
                                             let still_composing =
                                                 self.korean_state.handle_backspace();
                                             if !still_composing {
-                                                // Composition ended, send backspace to PTY
-                                                self.send_to_pty("\x7f");
+                                                // Composition ended, handle backspace directly with prompt protection
+                                                if let Ok(mut state) = self.terminal_state.lock() {
+                                                    state.clear_arrow_key_protection();
+                                                    state.backspace();
+                                                }
                                             }
-                                            // If still_composing is true, just update visual without sending to PTY
+                                            // If still_composing is true, just update visual without any terminal operation
                                         } else {
-                                            // Send backspace to PTY for proper text editing
-                                            // Clear arrow key protection to allow shell backspace
+                                            // Handle backspace directly with prompt protection (no PTY round-trip)
                                             if let Ok(mut state) = self.terminal_state.lock() {
                                                 state.clear_arrow_key_protection();
+                                                state.backspace();
                                             }
-                                            self.send_to_pty("\x7f");
                                         }
                                     }
                                     egui::Key::ArrowUp => {
@@ -1785,9 +1971,8 @@ impl eframe::App for TerminalApp {
                                                     // let _ = writer.write_all(b"\x08");
                                                 }
                                                 egui::Key::I if modifiers.ctrl => {
-                                                    // Ctrl+I is same as Tab, but Tab is already handled above
-                                                    // Don't send duplicate
-                                                    // let _ = writer.write_all(b"\x09");
+                                                    // Ctrl+I is handled above as Tab alternative - ignore here
+                                                    println!("🔄 Ctrl+I (already handled above as Tab alternative)");
                                                 }
                                                 egui::Key::J if modifiers.ctrl => {
                                                     // Ctrl+J (Line feed) is similar to Enter
@@ -1881,6 +2066,21 @@ impl eframe::App for TerminalApp {
                                 }
                             }
                             egui::Event::Text(text) => {
+                                // Debug: Log what text events we receive
+                                for ch in text.chars() {
+                                    if ch == '\t' {
+                                        println!("⚠️ Tab character received in Text event (already handled above)");
+                                        return; // Don't process as regular text - already handled above
+                                    } else if ch == '\n' {
+                                        println!("⚠️ Newline character received in Text event (potential duplication!)");
+                                    } else if ch == ' ' {
+                                        println!("✅ Space character in Text event (expected)");
+                                    } else if ch.is_ascii_graphic() {
+                                        println!("✅ Text event: '{}'", ch);
+                                    } else {
+                                        println!("❓ Text event: U+{:04X}", ch as u32);
+                                    }
+                                }
                                 // Use new IME-aware text processing
                                 self.process_text_input(text);
                             }
@@ -1917,9 +2117,6 @@ async fn main() {
         "WTerm",
         options,
         Box::new(|cc| {
-            // Enable IME support
-            cc.egui_ctx.set_debug_on_hover(false);
-
             Ok(Box::new(
                 TerminalApp::new(cc).expect("Failed to create terminal app"),
             ))
