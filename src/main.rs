@@ -3,9 +3,10 @@ use anyhow::Result;
 use eframe::egui;
 use portable_pty::{CommandBuilder, PtySize};
 
-use std::io::Write;
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
@@ -22,7 +23,7 @@ struct AnsiColor {
 impl Default for AnsiColor {
     fn default() -> Self {
         Self {
-            foreground: egui::Color32::WHITE,
+            foreground: egui::Color32::from_rgb(203, 204, 205), // Terminal white
             background: egui::Color32::TRANSPARENT,
             bold: false,
             italic: false,
@@ -203,26 +204,26 @@ fn is_vowel(ch: char) -> bool {
     matches!(ch, 'ㅏ'..='ㅣ')
 }
 
-// ANSI 256색 인덱스를 RGB로 변환
+// ANSI 256색 인덱스를 RGB로 변환 - macOS Terminal 호환
 fn ansi_256_to_rgb(color_idx: u8) -> egui::Color32 {
     match color_idx {
-        // Standard colors (0-15)
-        0 => egui::Color32::BLACK,
-        1 => egui::Color32::from_rgb(128, 0, 0),
-        2 => egui::Color32::from_rgb(0, 128, 0),
-        3 => egui::Color32::from_rgb(128, 128, 0),
-        4 => egui::Color32::from_rgb(0, 0, 128),
-        5 => egui::Color32::from_rgb(128, 0, 128),
-        6 => egui::Color32::from_rgb(0, 128, 128),
-        7 => egui::Color32::from_rgb(192, 192, 192),
-        8 => egui::Color32::from_rgb(128, 128, 128),
-        9 => egui::Color32::from_rgb(255, 0, 0),
-        10 => egui::Color32::from_rgb(0, 255, 0),
-        11 => egui::Color32::from_rgb(255, 255, 0),
-        12 => egui::Color32::from_rgb(0, 0, 255),
-        13 => egui::Color32::from_rgb(255, 0, 255),
-        14 => egui::Color32::from_rgb(0, 255, 255),
-        15 => egui::Color32::WHITE,
+        // Standard colors (0-15) - macOS Terminal compatible colors
+        0 => egui::Color32::from_rgb(0, 0, 0),        // Black
+        1 => egui::Color32::from_rgb(194, 54, 33),    // Red
+        2 => egui::Color32::from_rgb(37, 188, 36),    // Green
+        3 => egui::Color32::from_rgb(173, 173, 39),   // Yellow
+        4 => egui::Color32::from_rgb(73, 46, 225),    // Blue
+        5 => egui::Color32::from_rgb(211, 56, 211),   // Magenta
+        6 => egui::Color32::from_rgb(51, 187, 200),   // Cyan
+        7 => egui::Color32::from_rgb(203, 204, 205),  // White
+        8 => egui::Color32::from_rgb(129, 131, 131),  // Bright Black (Gray)
+        9 => egui::Color32::from_rgb(252, 57, 31),    // Bright Red
+        10 => egui::Color32::from_rgb(49, 231, 34),   // Bright Green
+        11 => egui::Color32::from_rgb(234, 236, 35),  // Bright Yellow
+        12 => egui::Color32::from_rgb(88, 51, 255),   // Bright Blue
+        13 => egui::Color32::from_rgb(249, 53, 248),  // Bright Magenta
+        14 => egui::Color32::from_rgb(20, 240, 240),  // Bright Cyan
+        15 => egui::Color32::from_rgb(233, 235, 235), // Bright White
         // 216 color cube (16-231)
         16..=231 => {
             let idx = color_idx - 16;
@@ -325,24 +326,46 @@ struct TerminalState {
     cursor_col: usize,
     rows: usize,
     cols: usize,
-    current_color: AnsiColor, // 현재 색상 상태
+    current_color: AnsiColor,        // 현재 색상 상태
+    consecutive_spaces: usize,       // Track consecutive spaces to prevent mass clearing
+    consecutive_backspaces: usize,   // Track consecutive backspaces to prevent mass deletion
+    arrow_key_pressed: bool,         // Track if arrow key was recently pressed
+    preserve_line: bool,             // Preserve current line content during line editing
+    arrow_key_time: Option<Instant>, // When arrow key was last pressed
+    // Alternative screen buffer support
+    main_buffer: Vec<Vec<TerminalCell>>, // Main screen buffer
+    alt_buffer: Vec<Vec<TerminalCell>>,  // Alternative screen buffer  
+    is_alt_screen: bool,                 // Currently using alternative screen
+    saved_cursor_main: (usize, usize),   // Saved cursor position for main screen
+    saved_cursor_alt: (usize, usize),    // Saved cursor position for alt screen
 }
 
 impl TerminalState {
     fn new(rows: usize, cols: usize) -> Self {
         let buffer = vec![vec![TerminalCell::default(); cols]; rows];
+        let main_buffer = vec![vec![TerminalCell::default(); cols]; rows];
+        let alt_buffer = vec![vec![TerminalCell::default(); cols]; rows];
         Self {
-            buffer,
+            buffer: buffer.clone(),
             cursor_row: 0,
             cursor_col: 0,
             rows,
             cols,
             current_color: AnsiColor::default(),
+            consecutive_spaces: 0,
+            consecutive_backspaces: 0,
+            arrow_key_pressed: false,
+            preserve_line: false,
+            arrow_key_time: None,
+            main_buffer,
+            alt_buffer,
+            is_alt_screen: false,
+            saved_cursor_main: (0, 0),
+            saved_cursor_alt: (0, 0),
         }
     }
 
     fn clear_screen(&mut self) {
-        println!("DEBUG: Clearing screen");
         // Clear all content and reset cursor to top-left
         for row in &mut self.buffer {
             for cell in row {
@@ -358,10 +381,22 @@ impl TerminalState {
             return;
         }
 
-        // Resize the buffer
+        // Resize all buffers
         self.buffer
             .resize(new_rows, vec![TerminalCell::default(); new_cols]);
         for row in &mut self.buffer {
+            row.resize(new_cols, TerminalCell::default());
+        }
+
+        self.main_buffer
+            .resize(new_rows, vec![TerminalCell::default(); new_cols]);
+        for row in &mut self.main_buffer {
+            row.resize(new_cols, TerminalCell::default());
+        }
+
+        self.alt_buffer
+            .resize(new_rows, vec![TerminalCell::default(); new_cols]);
+        for row in &mut self.alt_buffer {
             row.resize(new_cols, TerminalCell::default());
         }
 
@@ -375,6 +410,21 @@ impl TerminalState {
     }
 
     fn put_char(&mut self, ch: char) {
+        // Reset arrow key state when adding new text
+        self.clear_arrow_key_protection();
+
+        // Detect and limit consecutive spaces to prevent mass clearing by shells
+        if ch == ' ' {
+            self.consecutive_spaces += 1;
+            // More aggressive filtering - only allow a few consecutive spaces
+            if self.consecutive_spaces > 5 {
+                // Ignore mass space clearing attempts
+                return;
+            }
+        } else {
+            self.consecutive_spaces = 0; // Reset counter for non-space characters
+        }
+
         // Get the display width of the character
         let char_width = ch.width().unwrap_or(1);
 
@@ -409,8 +459,12 @@ impl TerminalState {
     }
 
     fn newline(&mut self) {
+        // Reset arrow key state when moving to new line
+        self.clear_arrow_key_protection();
+
         self.cursor_row += 1;
         self.cursor_col = 0;
+        self.consecutive_spaces = 0; // Reset on new line
         if self.cursor_row >= self.rows {
             // Scroll up
             self.buffer.remove(0);
@@ -450,16 +504,73 @@ impl TerminalState {
     }
 
     fn move_cursor_to(&mut self, row: usize, col: usize) {
-        println!("DEBUG: Moving cursor to ({}, {})", row, col);
         self.cursor_row = row.min(self.rows - 1);
         self.cursor_col = col.min(self.cols - 1);
     }
 
+    // Check if arrow key protection should still be active (within 300ms)
+    fn should_protect_from_arrow_key(&self) -> bool {
+        if !self.arrow_key_pressed {
+            return false;
+        }
+
+        if let Some(arrow_time) = self.arrow_key_time {
+            let elapsed = arrow_time.elapsed();
+            elapsed.as_millis() < 300 // 300ms protection window to catch delayed backspaces
+        } else {
+            false
+        }
+    }
+
+    // Set arrow key protection with current timestamp
+    fn set_arrow_key_protection(&mut self) {
+        self.arrow_key_pressed = true;
+        self.preserve_line = true;
+        self.arrow_key_time = Some(Instant::now());
+    }
+
+    // Clear arrow key protection
+    fn clear_arrow_key_protection(&mut self) {
+        self.arrow_key_pressed = false;
+        self.preserve_line = false;
+        self.arrow_key_time = None;
+    }
+
+    // Switch to alternative screen buffer
+    fn switch_to_alt_screen(&mut self) {
+        if !self.is_alt_screen {
+            // Save current main screen state
+            self.main_buffer = self.buffer.clone();
+            self.saved_cursor_main = (self.cursor_row, self.cursor_col);
+            
+            // Switch to alternative screen (start with clean screen)
+            self.buffer = self.alt_buffer.clone();
+            self.cursor_row = self.saved_cursor_alt.0;
+            self.cursor_col = self.saved_cursor_alt.1;
+            self.is_alt_screen = true;
+            
+            println!("🔄 Switched to alternative screen buffer");
+        }
+    }
+
+    // Switch back to main screen buffer
+    fn switch_to_main_screen(&mut self) {
+        if self.is_alt_screen {
+            // Save current alt screen state
+            self.alt_buffer = self.buffer.clone();
+            self.saved_cursor_alt = (self.cursor_row, self.cursor_col);
+            
+            // Restore main screen
+            self.buffer = self.main_buffer.clone();
+            self.cursor_row = self.saved_cursor_main.0;
+            self.cursor_col = self.saved_cursor_main.1;
+            self.is_alt_screen = false;
+            
+            println!("🔄 Restored main screen buffer");
+        }
+    }
+
     fn clear_from_cursor_to_end(&mut self) {
-        println!(
-            "DEBUG: Clear from cursor to end of screen at ({}, {})",
-            self.cursor_row, self.cursor_col
-        );
         // Only clear from cursor position to end of current line
         // Don't clear the lines below if there's already content there
         if self.cursor_row < self.buffer.len() {
@@ -474,7 +585,6 @@ impl TerminalState {
     }
 
     fn clear_from_start_to_cursor(&mut self) {
-        println!("DEBUG: Clear from start to cursor");
         // Clear all lines above current line
         for row in 0..=self.cursor_row {
             let end_col = if row == self.cursor_row {
@@ -511,6 +621,13 @@ impl TerminalPerformer {
 impl Perform for TerminalPerformer {
     fn print(&mut self, c: char) {
         if let Ok(mut state) = self.state.lock() {
+            // Log character input to help debug
+            if c.is_ascii_graphic() || c == ' ' {
+                print!("'{}'", c);
+            } else {
+                print!("U+{:04X}", c as u32);
+            }
+            io::stdout().flush().unwrap_or(());
             state.put_char(c);
         }
     }
@@ -518,32 +635,98 @@ impl Perform for TerminalPerformer {
     fn execute(&mut self, byte: u8) {
         if let Ok(mut state) = self.state.lock() {
             match byte {
-                b'\n' => state.newline(),
-                b'\r' => state.carriage_return(),
-                b'\x08' => state.backspace(), // Backspace
+                b'\n' => {
+                    println!("📄 Newline");
+                    state.newline();
+                }
+                b'\r' => {
+                    println!("🔄 Carriage return");
+                    state.carriage_return();
+                }
+                b'\x08' => {
+                    // Backspace - block if arrow key was recently pressed
+                    if state.should_protect_from_arrow_key() {
+                        println!("🚫 Backspace (blocked - arrow key protection active)");
+                    } else if state.cursor_col > 0 {
+                        println!("⬅️ Backspace (allowed)");
+                        state.backspace();
+                    }
+                }
                 b'\x0c' => {
-                    println!("DEBUG: Form Feed (Ctrl+L) received");
+                    // Form Feed (Ctrl+L) - allow screen clear but clear protection first
+                    state.clear_arrow_key_protection();
                     state.clear_screen();
-                } // Form Feed (Ctrl+L)
+                    println!("🧹 Form Feed - screen cleared");
+                }
+                b'\x7f' => {
+                    // DEL character - block if arrow key was recently pressed
+                    if state.should_protect_from_arrow_key() {
+                        println!("🚫 DEL (blocked - arrow key protection active)");
+                    } else if state.cursor_col > 0 {
+                        println!("🗑️ DEL (allowed)");
+                        state.backspace();
+                    }
+                }
                 _ => {
+                    // Log other control characters for debugging
                     if byte < 32 {
-                        println!("DEBUG: Unknown control character: 0x{:02x}", byte);
+                        println!("❓ Control char: 0x{:02x}", byte);
                     }
                 }
             }
         }
     }
 
-    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _c: char) {}
-    fn put(&mut self, _byte: u8) {}
-    fn unhook(&mut self) {}
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+    fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, c: char) {
+        println!(
+            "🪝 HOOK: '{}' params:{:?} intermediates:{:?} ignore:{}",
+            c,
+            params
+                .iter()
+                .map(|p| p.first().copied().unwrap_or(0))
+                .collect::<Vec<_>>(),
+            intermediates,
+            ignore
+        );
+    }
 
-    fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], _ignore: bool, c: char) {
+    fn put(&mut self, byte: u8) {
+        println!(
+            "📋 PUT: 0x{:02x} ('{}')",
+            byte,
+            if byte.is_ascii_graphic() {
+                byte as char
+            } else {
+                '?'
+            }
+        );
+    }
+
+    fn unhook(&mut self) {
+        println!("🔓 UNHOOK");
+    }
+
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        println!("🎯 OSC: params:{:?} bell:{}", params, bell_terminated);
+    }
+
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
         if let Ok(mut state) = self.state.lock() {
+            // Check if arrow key protection is still active
+            let should_protect = state.should_protect_from_arrow_key();
+
+            // Debug: Print CSI commands to understand what's happening
+            let param_values: Vec<u16> = params
+                .iter()
+                .map(|p| p.first().copied().unwrap_or(0))
+                .collect();
+            println!(
+                "CSI: '{}' params:{:?} protected:{} arrow_pressed:{}",
+                c, param_values, should_protect, state.arrow_key_pressed
+            );
+
             // Copy values we need before the match to avoid borrowing issues
             let cursor_row = state.cursor_row;
-            let cursor_col = state.cursor_col;
             let cols = state.cols;
             let rows = state.rows;
 
@@ -553,96 +736,83 @@ impl Perform for TerminalPerformer {
                     let row = params.iter().next().unwrap_or(&[1])[0].saturating_sub(1) as usize;
                     let col = params.iter().nth(1).unwrap_or(&[1])[0].saturating_sub(1) as usize;
                     state.move_cursor_to(row, col);
-                    println!("DEBUG: Moving cursor to ({}, {})", row, col);
                 }
                 'J' => {
-                    // ED (Erase in Display)
+                    // ED (Erase in Display) - COMPLETELY BLOCK ALL to prevent text deletion
                     let param = params.iter().next().unwrap_or(&[0])[0];
-                    println!("DEBUG: ED (Erase in Display) with param: {}", param);
                     match param {
                         0 => {
-                            println!(
-                                "DEBUG: Clear from cursor to end of screen at ({}, {})",
-                                cursor_row, cursor_col
-                            );
-                            state.clear_from_cursor_to_end();
+                            // ALWAYS BLOCK - this is the main culprit
+                            println!("🚫 BLOCKED: ED 0 (clear to end of display)");
                         }
                         1 => {
-                            println!("DEBUG: Clear from start to cursor");
-                            state.clear_from_start_to_cursor();
+                            // ALWAYS BLOCK
+                            println!("🚫 BLOCKED: ED 1 (clear from start to cursor)");
                         }
                         2 => {
-                            println!("DEBUG: ED 2 - Clear entire screen");
-                            state.clear_screen();
+                            // Only allow if explicitly requested (very rare case)
+                            // Block this too for now to be safe
+                            println!("🚫 BLOCKED: ED 2 (clear screen - completely blocked)");
                         }
                         3 => {
-                            println!("DEBUG: ED 3 - Clear entire screen and scrollback");
-                            state.clear_screen();
+                            // Block this too
+                            println!(
+                                "🚫 BLOCKED: ED 3 (clear screen + scrollback - completely blocked)"
+                            );
                         }
-                        _ => {}
+                        _ => {
+                            println!("🚫 BLOCKED: ED {} (unknown erase display)", param);
+                        }
                     }
                 }
                 'K' => {
-                    // EL (Erase in Line)
+                    // EL (Erase in Line) - COMPLETELY BLOCK ALL to prevent text deletion
                     let param = params.iter().next().unwrap_or(&[0])[0];
-                    println!("DEBUG: EL (Erase in Line) with param: {}", param);
                     match param {
                         0 => {
-                            // Clear from cursor to end of line
-                            for col in cursor_col..cols {
-                                if cursor_row < state.buffer.len()
-                                    && col < state.buffer[cursor_row].len()
-                                {
-                                    state.buffer[cursor_row][col] = TerminalCell::default();
-                                }
-                            }
+                            // ALWAYS BLOCK - this is the main cause of text disappearing
+                            println!("🚫 BLOCKED: EL 0 (clear to end of line) - MAIN CULPRIT!");
                         }
                         1 => {
-                            // Clear from start of line to cursor
-                            for col in 0..=cursor_col {
-                                if cursor_row < state.buffer.len()
-                                    && col < state.buffer[cursor_row].len()
-                                {
-                                    state.buffer[cursor_row][col] = TerminalCell::default();
-                                }
-                            }
+                            // ALWAYS BLOCK
+                            println!("🚫 BLOCKED: EL 1 (clear from start to cursor)");
                         }
                         2 => {
-                            // Clear entire line
-                            if cursor_row < state.buffer.len() {
-                                for col in 0..cols {
-                                    if col < state.buffer[cursor_row].len() {
-                                        state.buffer[cursor_row][col] = TerminalCell::default();
-                                    }
-                                }
-                            }
+                            // ALWAYS BLOCK for now - even entire line clear
+                            println!("🚫 BLOCKED: EL 2 (clear entire line - completely blocked)");
                         }
-                        _ => {}
+                        _ => {
+                            println!("🚫 BLOCKED: EL {} (unknown erase line)", param);
+                        }
                     }
                 }
                 'A' => {
-                    // CUU (Cursor Up)
+                    // CUU (Cursor Up) - ALWAYS ALLOW cursor movement
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
                     state.cursor_row = state.cursor_row.saturating_sub(count);
-                    println!("DEBUG: Cursor Up by {}", count);
+                    state.set_arrow_key_protection();
+                    println!("⬆️ Cursor UP by {}", count);
                 }
                 'B' => {
-                    // CUD (Cursor Down)
+                    // CUD (Cursor Down) - ALWAYS ALLOW cursor movement
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
                     state.cursor_row = (state.cursor_row + count).min(rows - 1);
-                    println!("DEBUG: Cursor Down by {}", count);
+                    state.set_arrow_key_protection();
+                    println!("⬇️ Cursor DOWN by {}", count);
                 }
                 'C' => {
-                    // CUF (Cursor Forward)
+                    // CUF (Cursor Forward) - ALWAYS ALLOW cursor movement
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
                     state.cursor_col = (state.cursor_col + count).min(cols - 1);
-                    println!("DEBUG: Cursor Forward by {}", count);
+                    state.set_arrow_key_protection();
+                    println!("➡️ Cursor RIGHT by {}", count);
                 }
                 'D' => {
-                    // CUB (Cursor Backward)
+                    // CUB (Cursor Backward) - ALWAYS ALLOW cursor movement
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
                     state.cursor_col = state.cursor_col.saturating_sub(count);
-                    println!("DEBUG: Cursor Backward by {}", count);
+                    state.set_arrow_key_protection();
+                    println!("⬅️ Cursor LEFT by {}", count);
                 }
                 'm' => {
                     // SGR (Select Graphic Rendition) - colors and text attributes
@@ -650,8 +820,11 @@ impl Perform for TerminalPerformer {
                         // Reset to defaults
                         state.current_color = AnsiColor::default();
                     } else {
-                        for param in params.iter() {
-                            if let Some(&code) = param.first() {
+                        // Process SGR parameters sequentially, handling multi-parameter sequences
+                        let param_vec: Vec<_> = params.iter().collect();
+                        let mut i = 0;
+                        while i < param_vec.len() {
+                            if let Some(&code) = param_vec[i].first() {
                                 match code {
                                     0 => state.current_color = AnsiColor::default(), // Reset
                                     1 => state.current_color.bold = true,            // Bold
@@ -660,107 +833,158 @@ impl Perform for TerminalPerformer {
                                     22 => state.current_color.bold = false, // Normal intensity
                                     23 => state.current_color.italic = false, // Not italic
                                     24 => state.current_color.underline = false, // Not underlined
-                                    // Foreground colors (8-color)
-                                    30 => state.current_color.foreground = egui::Color32::BLACK,
-                                    31 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(170, 0, 0)
-                                    }
-                                    32 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(0, 170, 0)
-                                    }
-                                    33 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(170, 85, 0)
-                                    }
-                                    34 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(0, 0, 170)
-                                    }
-                                    35 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(170, 0, 170)
-                                    }
-                                    36 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(0, 170, 170)
-                                    }
-                                    37 => {
-                                        state.current_color.foreground = egui::Color32::LIGHT_GRAY
-                                    }
+                                    // Foreground colors (8-color) - macOS Terminal compatible
+                                    30 => state.current_color.foreground = ansi_256_to_rgb(0), // Black
+                                    31 => state.current_color.foreground = ansi_256_to_rgb(1), // Red
+                                    32 => state.current_color.foreground = ansi_256_to_rgb(2), // Green
+                                    33 => state.current_color.foreground = ansi_256_to_rgb(3), // Yellow
+                                    34 => state.current_color.foreground = ansi_256_to_rgb(4), // Blue
+                                    35 => state.current_color.foreground = ansi_256_to_rgb(5), // Magenta
+                                    36 => state.current_color.foreground = ansi_256_to_rgb(6), // Cyan
+                                    37 => state.current_color.foreground = ansi_256_to_rgb(7), // White
                                     // Bright foreground colors
-                                    90 => state.current_color.foreground = egui::Color32::GRAY,
-                                    91 => {
+                                    90 => state.current_color.foreground = ansi_256_to_rgb(8), // Bright Black
+                                    91 => state.current_color.foreground = ansi_256_to_rgb(9), // Bright Red
+                                    92 => state.current_color.foreground = ansi_256_to_rgb(10), // Bright Green
+                                    93 => state.current_color.foreground = ansi_256_to_rgb(11), // Bright Yellow
+                                    94 => state.current_color.foreground = ansi_256_to_rgb(12), // Bright Blue
+                                    95 => state.current_color.foreground = ansi_256_to_rgb(13), // Bright Magenta
+                                    96 => state.current_color.foreground = ansi_256_to_rgb(14), // Bright Cyan
+                                    97 => state.current_color.foreground = ansi_256_to_rgb(15), // Bright White
+                                    // Background colors (40-47)
+                                    40 => state.current_color.background = ansi_256_to_rgb(0), // Black
+                                    41 => state.current_color.background = ansi_256_to_rgb(1), // Red
+                                    42 => state.current_color.background = ansi_256_to_rgb(2), // Green
+                                    43 => state.current_color.background = ansi_256_to_rgb(3), // Yellow
+                                    44 => state.current_color.background = ansi_256_to_rgb(4), // Blue
+                                    45 => state.current_color.background = ansi_256_to_rgb(5), // Magenta
+                                    46 => state.current_color.background = ansi_256_to_rgb(6), // Cyan
+                                    47 => state.current_color.background = ansi_256_to_rgb(7), // White
+                                    // Bright background colors (100-107)
+                                    100 => state.current_color.background = ansi_256_to_rgb(8), // Bright Black
+                                    101 => state.current_color.background = ansi_256_to_rgb(9), // Bright Red
+                                    102 => state.current_color.background = ansi_256_to_rgb(10), // Bright Green
+                                    103 => state.current_color.background = ansi_256_to_rgb(11), // Bright Yellow
+                                    104 => state.current_color.background = ansi_256_to_rgb(12), // Bright Blue
+                                    105 => state.current_color.background = ansi_256_to_rgb(13), // Bright Magenta
+                                    106 => state.current_color.background = ansi_256_to_rgb(14), // Bright Cyan
+                                    107 => state.current_color.background = ansi_256_to_rgb(15), // Bright White
+                                    // Default colors
+                                    39 => {
                                         state.current_color.foreground =
-                                            egui::Color32::from_rgb(255, 85, 85)
-                                    }
-                                    92 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(85, 255, 85)
-                                    }
-                                    93 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(255, 255, 85)
-                                    }
-                                    94 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(85, 85, 255)
-                                    }
-                                    95 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(255, 85, 255)
-                                    }
-                                    96 => {
-                                        state.current_color.foreground =
-                                            egui::Color32::from_rgb(85, 255, 255)
-                                    }
-                                    97 => state.current_color.foreground = egui::Color32::WHITE,
-                                    // Default foreground
-                                    39 => state.current_color.foreground = egui::Color32::WHITE,
-                                    // Background colors (40-47, 100-107) can be added similarly
-                                    // 256-color and RGB support can be added for codes 38 and 48
-                                    _ => {
-                                        // Handle 256-color and RGB sequences
-                                        if code == 38 && param.len() >= 3 {
-                                            if param[1] == 5 && param.len() >= 3 {
-                                                // 256-color foreground: ESC[38;5;nm
-                                                let color_idx = param[2] as u8;
-                                                state.current_color.foreground =
-                                                    ansi_256_to_rgb(color_idx);
-                                            } else if param[1] == 2 && param.len() >= 5 {
-                                                // RGB foreground: ESC[38;2;r;g;bm
-                                                let r = param[2] as u8;
-                                                let g = param[3] as u8;
-                                                let b = param[4] as u8;
-                                                state.current_color.foreground =
-                                                    egui::Color32::from_rgb(r, g, b);
+                                            egui::Color32::from_rgb(203, 204, 205)
+                                    } // Default foreground
+                                    49 => {
+                                        state.current_color.background = egui::Color32::TRANSPARENT
+                                    } // Default background
+                                    // Extended color sequences
+                                    38 => {
+                                        // Foreground color: 38;5;n or 38;2;r;g;b
+                                        if i + 2 < param_vec.len() {
+                                            if let Some(&subtype) = param_vec[i + 1].first() {
+                                                if subtype == 5 && i + 2 < param_vec.len() {
+                                                    // 256-color: ESC[38;5;nm
+                                                    if let Some(&color_idx) =
+                                                        param_vec[i + 2].first()
+                                                    {
+                                                        state.current_color.foreground =
+                                                            ansi_256_to_rgb(color_idx as u8);
+                                                        i += 2; // Skip the next 2 parameters
+                                                    }
+                                                } else if subtype == 2 && i + 4 < param_vec.len() {
+                                                    // RGB: ESC[38;2;r;g;bm
+                                                    if let (Some(&r), Some(&g), Some(&b)) = (
+                                                        param_vec[i + 2].first(),
+                                                        param_vec[i + 3].first(),
+                                                        param_vec[i + 4].first(),
+                                                    ) {
+                                                        state.current_color.foreground =
+                                                            egui::Color32::from_rgb(
+                                                                r as u8, g as u8, b as u8,
+                                                            );
+                                                        i += 4; // Skip the next 4 parameters
+                                                    }
+                                                }
                                             }
                                         }
                                     }
+                                    48 => {
+                                        // Background color: 48;5;n or 48;2;r;g;b
+                                        if i + 2 < param_vec.len() {
+                                            if let Some(&subtype) = param_vec[i + 1].first() {
+                                                if subtype == 5 && i + 2 < param_vec.len() {
+                                                    // 256-color: ESC[48;5;nm
+                                                    if let Some(&color_idx) =
+                                                        param_vec[i + 2].first()
+                                                    {
+                                                        state.current_color.background =
+                                                            ansi_256_to_rgb(color_idx as u8);
+                                                        i += 2; // Skip the next 2 parameters
+                                                    }
+                                                } else if subtype == 2 && i + 4 < param_vec.len() {
+                                                    // RGB: ESC[48;2;r;g;bm
+                                                    if let (Some(&r), Some(&g), Some(&b)) = (
+                                                        param_vec[i + 2].first(),
+                                                        param_vec[i + 3].first(),
+                                                        param_vec[i + 4].first(),
+                                                    ) {
+                                                        state.current_color.background =
+                                                            egui::Color32::from_rgb(
+                                                                r as u8, g as u8, b as u8,
+                                                            );
+                                                        i += 4; // Skip the next 4 parameters
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        // Unknown SGR code - ignore
+                                    }
                                 }
                             }
+                            i += 1;
                         }
                     }
                 }
                 'h' | 'l' => {
                     // Set Mode (h) / Reset Mode (l) - often used for terminal features
+                    let is_private_mode = intermediates.contains(&b'?');
+                    
                     if let Some(first_param) = params.iter().next() {
                         let mode = first_param[0];
-                        match mode {
-                            1 => {
-                                // Application cursor keys mode - silently ignore
+                        
+                        if is_private_mode {
+                            // Private mode sequences (ESC[?...h/l)
+                            match mode {
+                                1 => {
+                                    // Application cursor keys mode - silently ignore
+                                }
+                                25 => {
+                                    // Cursor visibility mode - silently ignore
+                                }
+                                1049 => {
+                                    // Alternative screen buffer
+                                    if c == 'h' {
+                                        // ESC[?1049h - Switch to alternative screen buffer
+                                        state.switch_to_alt_screen();
+                                    } else {
+                                        // ESC[?1049l - Switch back to main screen buffer
+                                        state.switch_to_main_screen();
+                                    }
+                                }
+                                _ => {
+                                    // Silently ignore other private modes
+                                }
                             }
-                            2004 => {
-                                // Bracketed paste mode - silently ignore
-                            }
-                            _ => {
-                                // Only log unknown modes to reduce noise
-                                if mode != 1 && mode != 2004 {
-                                    println!(
-                                        "DEBUG: Unknown mode sequence: '{}' with mode {}",
-                                        c, mode
-                                    );
+                        } else {
+                            // Standard mode sequences (ESC[...h/l)
+                            match mode {
+                                2004 => {
+                                    // Bracketed paste mode - silently ignore
+                                }
+                                _ => {
+                                    // Silently ignore other standard modes
                                 }
                             }
                         }
@@ -777,13 +1001,51 @@ impl Perform for TerminalPerformer {
                     state.cursor_col = col.min(cols - 1);
                 }
                 't' => {
-                    // Window manipulation sequences - ignore for now
+                    // Window manipulation sequences - ignore
+                }
+                'n' => {
+                    // Device Status Report - ignore
+                }
+                'c' => {
+                    // Device Attributes - ignore
+                }
+                'r' => {
+                    // Set scrolling region - ignore for now
+                }
+                'S' => {
+                    // Scroll up - ignore for now
+                }
+                'T' => {
+                    // Scroll down - ignore for now
+                }
+                'X' => {
+                    // ECH (Erase Character) - COMPLETELY BLOCKED
+                    let count = params.iter().next().unwrap_or(&[1])[0];
+                    println!("🚫 BLOCKED: ECH (erase {} characters)", count);
+                }
+                'P' => {
+                    // DCH (Delete Character) - COMPLETELY BLOCKED
+                    let count = params.iter().next().unwrap_or(&[1])[0];
+                    println!("🚫 BLOCKED: DCH (delete {} characters)", count);
+                }
+                '@' => {
+                    // ICH (Insert Character) - ignore for now
+                }
+                'L' => {
+                    // Insert line - ignore for now
+                }
+                'M' => {
+                    // Delete line - ignore for now
+                }
+                's' => {
+                    // Save cursor position - ignore for now
+                }
+                'u' => {
+                    // Restore cursor position - ignore for now
                 }
                 _ => {
-                    println!(
-                        "DEBUG: Unknown CSI sequence: '{}' with params {:?}",
-                        c, params
-                    );
+                    // Silently ignore unknown CSI sequences
+                    // This helps with compatibility with complex prompts
                 }
             }
         }
@@ -803,7 +1065,10 @@ pub struct TerminalApp {
 impl TerminalApp {
     // Process text input with Korean composition support
     fn process_text_input(&mut self, text: &str) {
-        println!("DEBUG: Processing text: '{}'", text);
+        // Reset arrow key state when text is being input
+        if let Ok(mut state) = self.terminal_state.lock() {
+            state.clear_arrow_key_protection();
+        }
 
         for ch in text.chars() {
             self.process_single_char(ch);
@@ -827,10 +1092,6 @@ impl TerminalApp {
 
     // Process Korean character input and return completed character if any
     fn process_korean_char(&mut self, ch: char) -> Option<char> {
-        println!(
-            "DEBUG: Processing Korean char: '{}', current state: {:?}",
-            ch, self.korean_state
-        );
         if is_consonant(ch) {
             if self.korean_state.chosung.is_none() {
                 // First consonant - set as chosung, start composing
@@ -905,16 +1166,10 @@ impl TerminalApp {
 
     // Finalize any pending Korean composition
     fn finalize_korean_composition(&mut self) {
-        println!(
-            "DEBUG: finalize_korean_composition called, is_composing: {}",
-            self.korean_state.is_composing
-        );
         if self.korean_state.is_composing {
             if let Some(completed) = self.korean_state.get_current_char() {
-                println!("DEBUG: Completing Korean character: '{}'", completed);
                 self.send_to_pty(&completed.to_string());
             }
-            println!("DEBUG: Resetting Korean state");
             self.korean_state.reset();
         }
     }
@@ -922,11 +1177,12 @@ impl TerminalApp {
     // Helper function to send text to PTY
     fn send_to_pty(&self, text: &str) {
         if let Ok(mut writer) = self.pty_writer.lock() {
-            println!(
-                "DEBUG: Sending to PTY: '{}' (bytes: {:?})",
-                text,
-                text.as_bytes()
-            );
+            // Log what we're sending to PTY for debugging
+            if text.starts_with('\x1b') {
+                println!("📤 Sending to PTY: ESC sequence {:?}", text);
+            } else {
+                println!("📤 Sending to PTY: {:?}", text);
+            }
             let _ = writer.write_all(text.as_bytes());
             let _ = writer.flush();
         }
@@ -978,6 +1234,11 @@ impl TerminalApp {
         cmd.env("LANG", "ko_KR.UTF-8");
         cmd.env("LC_ALL", "ko_KR.UTF-8");
         cmd.env("LC_CTYPE", "UTF-8");
+        cmd.env("SHELL", "/bin/zsh");
+        cmd.env("COLORTERM", "truecolor");
+        // Fix arrow key mapping issues
+        cmd.env("INPUTRC", "/dev/null"); // Ignore custom readline config
+        cmd.env("ZSH_NO_EXEC", "0"); // Ensure zsh processes commands normally
         let _child = pty_pair.slave.spawn_command(cmd)?;
 
         let mut pty_reader = pty_pair.master.try_clone_reader()?;
@@ -995,16 +1256,17 @@ impl TerminalApp {
                 match pty_reader.read(&mut buffer) {
                     Ok(0) => break, // EOF
                     Ok(n) => {
-                        // Debug: print raw bytes
-                        print!("DEBUG PTY: ");
+                        // Log raw PTY data for debugging
+                        print!("📡 PTY Raw: ");
                         for &byte in &buffer[..n] {
                             if byte.is_ascii_graphic() || byte == b' ' {
-                                print!("{}", byte as char);
+                                print!("'{}'", byte as char);
                             } else {
-                                print!("\\x{:02x}", byte);
+                                print!("0x{:02x} ", byte);
                             }
                         }
                         println!();
+                        io::stdout().flush().unwrap_or(());
 
                         for &byte in &buffer[..n] {
                             parser.advance(&mut performer, byte);
@@ -1053,11 +1315,6 @@ impl TerminalApp {
             return Ok(());
         }
 
-        println!(
-            "DEBUG: Resizing terminal from {:?} to ({}, {})",
-            current_size, new_rows, new_cols
-        );
-
         // Resize the terminal state
         {
             let mut state = self.terminal_state.lock().unwrap();
@@ -1091,10 +1348,8 @@ impl eframe::App for TerminalApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Show terminal info
             ui.horizontal(|ui| {
-                ui.label("🖥️ 터미널:");
-                ui.label("기본 터미널 기능");
-                ui.separator();
-                ui.label("🔧 디버그: 콘솔에서 입력 로그 확인");
+                ui.label("🖥️ WTerm:");
+                ui.label("macOS 스타일 터미널");
             });
 
             ui.separator();
@@ -1116,7 +1371,8 @@ impl eframe::App for TerminalApp {
                     // Calculate exact font metrics
                     let font_id = egui::FontId::new(11.0, egui::FontFamily::Monospace);
                     let line_height = ui.fonts(|f| f.row_height(&font_id));
-                    let char_width = ui.fonts(|f| f.glyph_width(&font_id, ' '));
+                    // Use a consistent character for width calculation (use 'M' for monospace)
+                    let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
 
                     // Calculate terminal content size
                     if let Ok(state) = self.terminal_state.lock() {
@@ -1129,87 +1385,191 @@ impl eframe::App for TerminalApp {
                             egui::Sense::click(),
                         );
 
+                        // Draw terminal background (macOS Terminal style black background)
+                        painter.rect_filled(
+                            response.rect,
+                            egui::Rounding::ZERO,
+                            egui::Color32::BLACK,
+                        );
+
                         // Request focus when clicked
                         if response.clicked() {
                             ui.memory_mut(|mem| mem.request_focus(response.id));
                         }
 
-                        // Draw terminal content
+                        // Terminal rendering without debug output
+
+                        // First, draw all terminal content (characters and backgrounds)
                         for (row_idx, row) in state.buffer.iter().enumerate() {
                             let y = response.rect.top() + row_idx as f32 * line_height;
                             let mut col_offset = 0.0;
 
-                            for (col_idx, cell) in row.iter().enumerate() {
+                            for (_col_idx, cell) in row.iter().enumerate() {
                                 // Skip continuation markers for wide characters
                                 if cell.ch == '\u{0000}' {
                                     continue;
                                 }
 
-                                let char_display_width = cell.ch.width().unwrap_or(1);
+                                // For monospace font, all characters should have same width except for wide chars
+                                let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
+                                    2 // Keep wide characters (like Korean) as 2 units
+                                } else {
+                                    1 // All other characters (including space) are 1 unit
+                                };
                                 let display_width = char_display_width as f32 * char_width;
 
                                 let x = response.rect.left() + col_offset;
                                 let pos = egui::Pos2::new(x, y);
+                                let cell_rect = egui::Rect::from_min_size(
+                                    pos,
+                                    egui::Vec2::new(display_width, line_height),
+                                );
 
-                                // Highlight cursor position
-                                if row_idx == state.cursor_row && col_idx == state.cursor_col {
-                                    // Show composing Korean character at cursor if any
-                                    let display_char = if let Some(composing_char) =
-                                        self.korean_state.get_current_char()
-                                    {
-                                        if self.korean_state.is_composing {
-                                            composing_char
-                                        } else {
-                                            cell.ch
-                                        }
-                                    } else {
-                                        cell.ch
-                                    };
-
-                                    // Calculate cursor width - Korean characters need wide cursor
-                                    let cursor_width = if self.korean_state.is_composing {
-                                        // Korean composing characters are always wide (2 chars)
-                                        2.0 * char_width
-                                    } else {
-                                        // Use actual character width for non-composing
-                                        display_width
-                                    };
-
-                                    // Different highlight for composing vs normal cursor
-                                    let (bg_color, text_color) = if self.korean_state.is_composing {
-                                        (egui::Color32::LIGHT_BLUE, egui::Color32::BLACK)
-                                    } else {
-                                        (egui::Color32::YELLOW, egui::Color32::BLACK)
-                                    };
-
-                                    let cursor_rect = egui::Rect::from_min_size(
-                                        pos,
-                                        egui::Vec2::new(cursor_width, line_height),
-                                    );
+                                // Draw background color if not transparent and not the default black
+                                if cell.color.background != egui::Color32::TRANSPARENT
+                                    && cell.color.background != egui::Color32::BLACK
+                                {
                                     painter.rect_filled(
-                                        cursor_rect,
+                                        cell_rect,
                                         egui::Rounding::ZERO,
-                                        bg_color,
+                                        cell.color.background,
                                     );
-                                    painter.text(
-                                        pos,
-                                        egui::Align2::LEFT_TOP,
-                                        display_char,
-                                        font_id.clone(),
-                                        text_color,
-                                    );
-                                } else {
-                                    painter.text(
-                                        pos,
-                                        egui::Align2::LEFT_TOP,
-                                        cell.ch,
-                                        font_id.clone(),
-                                        cell.color.foreground,
-                                    );
+                                }
+
+                                // Normal character rendering (don't draw cursor here)
+                                if cell.ch != ' '
+                                    || (cell.color.background != egui::Color32::TRANSPARENT
+                                        && cell.color.background != egui::Color32::BLACK)
+                                {
+                                    let mut text_color = cell.color.foreground;
+
+                                    // Apply bold effect by making color brighter
+                                    if cell.color.bold {
+                                        let [r, g, b, a] = text_color.to_array();
+                                        text_color = egui::Color32::from_rgba_unmultiplied(
+                                            (r as f32 * 1.3).min(255.0) as u8,
+                                            (g as f32 * 1.3).min(255.0) as u8,
+                                            (b as f32 * 1.3).min(255.0) as u8,
+                                            a,
+                                        );
+                                    }
+
+                                    if cell.ch != ' ' {
+                                        painter.text(
+                                            pos,
+                                            egui::Align2::LEFT_TOP,
+                                            cell.ch,
+                                            font_id.clone(),
+                                            text_color,
+                                        );
+                                    }
+
+                                    // Draw underline if enabled
+                                    if cell.color.underline {
+                                        let underline_y = y + line_height - 1.0;
+                                        painter.line_segment(
+                                            [
+                                                egui::Pos2::new(x, underline_y),
+                                                egui::Pos2::new(x + display_width, underline_y),
+                                            ],
+                                            egui::Stroke::new(1.0, text_color),
+                                        );
+                                    }
                                 }
 
                                 col_offset += display_width;
                             }
+                        }
+
+                        // Now draw cursor separately at correct position
+                        let cursor_y = response.rect.top() + state.cursor_row as f32 * line_height;
+
+                        // Calculate precise cursor X position by walking through the row
+                        let mut cursor_x = response.rect.left();
+                        if state.cursor_row < state.buffer.len() {
+                            for (col_idx, cell) in state.buffer[state.cursor_row].iter().enumerate()
+                            {
+                                if col_idx >= state.cursor_col {
+                                    break;
+                                }
+
+                                // Skip continuation markers for wide characters
+                                if cell.ch == '\u{0000}' {
+                                    continue;
+                                }
+
+                                // For monospace font, all characters should have same width except for wide chars
+                                let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
+                                    2 // Keep wide characters (like Korean) as 2 units
+                                } else {
+                                    1 // All other characters (including space) are 1 unit
+                                };
+                                cursor_x += char_display_width as f32 * char_width;
+                            }
+                        }
+
+                        // Calculate cursor width for Korean composition if needed
+                        let cursor_width = if self.korean_state.is_composing {
+                            // Korean composing characters are always wide (2 chars)
+                            2.0 * char_width
+                        } else {
+                            // Normal cursor width
+                            char_width
+                        };
+
+                        // Draw composing character preview if Korean composition is active
+                        if self.korean_state.is_composing {
+                            if let Some(composing_char) = self.korean_state.get_current_char() {
+                                // Draw composing character with a different color (gray/dimmed) to show it's temporary
+                                let preview_color = egui::Color32::from_rgb(150, 150, 150); // Gray preview color
+                                
+                                painter.text(
+                                    egui::Pos2::new(cursor_x, cursor_y),
+                                    egui::Align2::LEFT_TOP,
+                                    composing_char,
+                                    font_id.clone(),
+                                    preview_color,
+                                );
+                                
+                                // Draw a subtle background to make the preview more visible
+                                let preview_bg = egui::Color32::from_rgba_unmultiplied(100, 100, 100, 50);
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::Pos2::new(cursor_x, cursor_y),
+                                        egui::Vec2::new(cursor_width, line_height),
+                                    ),
+                                    egui::Rounding::ZERO,
+                                    preview_bg,
+                                );
+                                
+                                // Redraw the composing character on top of background
+                                painter.text(
+                                    egui::Pos2::new(cursor_x, cursor_y),
+                                    egui::Align2::LEFT_TOP,
+                                    composing_char,
+                                    font_id.clone(),
+                                    preview_color,
+                                );
+                            }
+                        }
+
+                        // Underscore cursor style - doesn't cover text
+                        let cursor_color = egui::Color32::WHITE;
+
+                        // Only draw cursor if we're actually at a valid position
+                        if state.cursor_row < state.buffer.len() && state.cursor_col < state.cols {
+                            // Draw underscore cursor at the bottom of the character cell
+                            let cursor_line_y = cursor_y + line_height - 2.0; // 2 pixels from bottom
+                            let cursor_line_thickness = 2.0;
+
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::Pos2::new(cursor_x, cursor_line_y),
+                                    egui::Vec2::new(cursor_width, cursor_line_thickness),
+                                ),
+                                egui::Rounding::ZERO,
+                                cursor_color,
+                            );
                         }
 
                         // Auto-scroll to cursor position
@@ -1231,17 +1591,11 @@ impl eframe::App for TerminalApp {
 
             // Handle ESC key specially using direct input check
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                println!(
-                    "DEBUG: ESC key detected, is_composing: {}",
-                    self.korean_state.is_composing
-                );
                 if self.korean_state.is_composing {
                     // 조합 중이면 조합만 완성하고 ESC는 무시
-                    println!("DEBUG: Finalizing Korean composition due to ESC");
                     self.finalize_korean_composition();
                 } else {
                     // 조합 중이 아니면 정상적으로 ESC 처리
-                    println!("DEBUG: Sending ESC to PTY");
                     self.send_to_pty("\x1b");
                 }
                 // Force maintain focus after ESC
@@ -1258,22 +1612,24 @@ impl eframe::App for TerminalApp {
                                 modifiers,
                                 ..
                             } => {
-                                println!("DEBUG: Key event received: {:?}, pressed: true", key);
-
                                 // Handle keys that should finalize Korean composition
                                 match key {
                                     egui::Key::Enter => {
                                         self.finalize_korean_composition();
-                                        if let Ok(mut writer) = self.pty_writer.lock() {
-                                            let _ = writer.write_all(b"\n");
-                                            let _ = writer.flush();
+                                        // Reset arrow key state when user presses Enter
+                                        if let Ok(mut state) = self.terminal_state.lock() {
+                                            state.clear_arrow_key_protection();
                                         }
+                                        self.send_to_pty("\n");
                                     }
                                     egui::Key::Space => {
+                                        // Space is handled by Text event, don't handle it here
+                                        // Just finalize Korean composition if any
                                         self.finalize_korean_composition();
-                                        self.send_to_pty(" ");
                                     }
                                     egui::Key::Tab => {
+                                        // Tab might also be handled by Text event, but we handle it here
+                                        // since it's a special control character
                                         self.finalize_korean_composition();
                                         self.send_to_pty("\t");
                                     }
@@ -1285,19 +1641,17 @@ impl eframe::App for TerminalApp {
                                             let still_composing =
                                                 self.korean_state.handle_backspace();
                                             if !still_composing {
-                                                // Composition ended, now do normal backspace
-                                                if let Ok(mut writer) = self.pty_writer.lock() {
-                                                    let _ = writer.write_all(b"\x7f");
-                                                    let _ = writer.flush();
-                                                }
+                                                // Composition ended, send backspace to PTY
+                                                self.send_to_pty("\x7f");
                                             }
                                             // If still_composing is true, just update visual without sending to PTY
                                         } else {
-                                            // Normal backspace behavior
-                                            if let Ok(mut writer) = self.pty_writer.lock() {
-                                                let _ = writer.write_all(b"\x7f");
-                                                let _ = writer.flush();
+                                            // Send backspace to PTY for proper text editing
+                                            // Clear arrow key protection to allow shell backspace
+                                            if let Ok(mut state) = self.terminal_state.lock() {
+                                                state.clear_arrow_key_protection();
                                             }
+                                            self.send_to_pty("\x7f");
                                         }
                                     }
                                     egui::Key::ArrowUp => {
@@ -1305,7 +1659,7 @@ impl eframe::App for TerminalApp {
                                             // 조합 중이면 조합만 완성하고 화살표는 무시
                                             self.finalize_korean_composition();
                                         } else {
-                                            // 조합 중이 아니면 정상적으로 화살표 키 처리
+                                            // Send to PTY for command history navigation
                                             self.send_to_pty("\x1b[A");
                                         }
                                     }
@@ -1314,7 +1668,7 @@ impl eframe::App for TerminalApp {
                                             // 조합 중이면 조합만 완성하고 화살표는 무시
                                             self.finalize_korean_composition();
                                         } else {
-                                            // 조합 중이 아니면 정상적으로 화살표 키 처리
+                                            // Send to PTY for command history navigation
                                             self.send_to_pty("\x1b[B");
                                         }
                                     }
@@ -1323,8 +1677,42 @@ impl eframe::App for TerminalApp {
                                             // 조합 중이면 조합만 완성하고 화살표는 무시
                                             self.finalize_korean_composition();
                                         } else {
-                                            // 조합 중이 아니면 정상적으로 화살표 키 처리
-                                            self.send_to_pty("\x1b[C");
+                                            // DIRECT cursor movement - bypass PTY to avoid backspace issue
+                                            if let Ok(mut state) = self.terminal_state.lock() {
+                                                state.set_arrow_key_protection();
+                                                let current_col = state.cursor_col;
+                                                
+                                                // Find the user input area (after prompt)
+                                                let mut prompt_end = 0;
+                                                let mut text_end = 0;
+                                                if state.cursor_row < state.buffer.len() {
+                                                    let row = &state.buffer[state.cursor_row];
+                                                    // Find prompt end: "~ " or "✗ " pattern
+                                                    for i in 0..row.len().saturating_sub(1) {
+                                                        if (row[i].ch == '~' || row[i].ch == '✗') && row[i + 1].ch == ' ' {
+                                                            prompt_end = i + 2; // Position after "~ " or "✗ "
+                                                            break;
+                                                        }
+                                                    }
+                                                    
+                                                    // Find text end in user input area only
+                                                    for (i, cell) in row.iter().enumerate().skip(prompt_end) {
+                                                        if cell.ch != ' ' && cell.ch != '\u{0000}' {
+                                                            text_end = i + 1; // Position after last non-space character
+                                                        }
+                                                    }
+                                                }
+
+                                                // Only move right if there's text at or after the target position
+                                                let target_col = current_col + 1;
+                                                if target_col <= text_end && target_col < state.cols {
+                                                    state.cursor_col = target_col;
+                                                    println!("🔄 Direct cursor RIGHT: {} -> {} (user text_end: {})", current_col, state.cursor_col, text_end);
+                                                } else {
+                                                    println!("🚫 RIGHT blocked: {} (user text_end: {}, would go beyond user text)", current_col, text_end);
+                                                }
+                                            }
+                                            // Don't send to PTY - handle locally
                                         }
                                     }
                                     egui::Key::ArrowLeft => {
@@ -1332,8 +1720,33 @@ impl eframe::App for TerminalApp {
                                             // 조합 중이면 조합만 완성하고 화살표는 무시
                                             self.finalize_korean_composition();
                                         } else {
-                                            // 조합 중이 아니면 정상적으로 화살표 키 처리
-                                            self.send_to_pty("\x1b[D");
+                                            // DIRECT cursor movement - bypass PTY to avoid backspace issue
+                                            if let Ok(mut state) = self.terminal_state.lock() {
+                                                state.set_arrow_key_protection();
+                                                let current_col = state.cursor_col;
+                                                
+                                                // Find prompt end to limit leftward movement
+                                                let mut prompt_end = 0;
+                                                if state.cursor_row < state.buffer.len() {
+                                                    let row = &state.buffer[state.cursor_row];
+                                                    // Find prompt end: "~ " or "✗ " pattern
+                                                    for i in 0..row.len().saturating_sub(1) {
+                                                        if (row[i].ch == '~' || row[i].ch == '✗') && row[i + 1].ch == ' ' {
+                                                            prompt_end = i + 2; // Position after "~ " or "✗ "
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+
+                                                // Only move left if we're not at prompt end
+                                                if current_col > prompt_end {
+                                                    state.cursor_col = current_col - 1;
+                                                    println!("🔄 Direct cursor LEFT: {} -> {} (prompt_end: {})", current_col, state.cursor_col, prompt_end);
+                                                } else {
+                                                    println!("🚫 LEFT blocked: {} (prompt_end: {}, would enter prompt area)", current_col, prompt_end);
+                                                }
+                                            }
+                                            // Don't send to PTY - handle locally
                                         }
                                     }
                                     _ => {
@@ -1342,23 +1755,123 @@ impl eframe::App for TerminalApp {
                                             match key {
                                                 egui::Key::A if modifiers.ctrl => {
                                                     let _ = writer.write_all(b"\x01");
-                                                    // Ctrl+A (Start of Heading)
+                                                    // Ctrl+A (Start of line)
+                                                }
+                                                egui::Key::B if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x02");
+                                                    // Ctrl+B (Backward char)
                                                 }
                                                 egui::Key::C if modifiers.ctrl => {
                                                     let _ = writer.write_all(b"\x03");
-                                                    // Ctrl+C
+                                                    // Ctrl+C (Interrupt)
                                                 }
                                                 egui::Key::D if modifiers.ctrl => {
                                                     let _ = writer.write_all(b"\x04");
-                                                    // Ctrl+D
+                                                    // Ctrl+D (EOF)
                                                 }
                                                 egui::Key::E if modifiers.ctrl => {
                                                     let _ = writer.write_all(b"\x05");
-                                                    // Ctrl+E (End of Text)
+                                                    // Ctrl+E (End of line)
+                                                }
+                                                egui::Key::F if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x06");
+                                                    // Ctrl+F (Forward char)
+                                                }
+                                                egui::Key::G if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x07");
+                                                    // Ctrl+G (Bell)
+                                                }
+                                                egui::Key::H if modifiers.ctrl => {
+                                                    // Ctrl+H is same as Backspace, but Backspace is already handled above
+                                                    // Don't send duplicate
+                                                    // let _ = writer.write_all(b"\x08");
+                                                }
+                                                egui::Key::I if modifiers.ctrl => {
+                                                    // Ctrl+I is same as Tab, but Tab is already handled above
+                                                    // Don't send duplicate
+                                                    // let _ = writer.write_all(b"\x09");
+                                                }
+                                                egui::Key::J if modifiers.ctrl => {
+                                                    // Ctrl+J (Line feed) is similar to Enter
+                                                    // Keep this as it's a distinct terminal control sequence
+                                                    let _ = writer.write_all(b"\x0a");
+                                                }
+                                                egui::Key::K if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x0b");
+                                                    // Ctrl+K (Kill line)
                                                 }
                                                 egui::Key::L if modifiers.ctrl => {
+                                                    // Ctrl+L (Form Feed/Clear) - clear screen and request new prompt
+                                                    if let Ok(mut state) =
+                                                        self.terminal_state.lock()
+                                                    {
+                                                        state.clear_arrow_key_protection();
+                                                        state.clear_screen();
+                                                    }
+                                                    // Send Ctrl+L to PTY so shell displays new prompt
                                                     let _ = writer.write_all(b"\x0c");
-                                                    // Ctrl+L (Form Feed)
+                                                    println!("🧹 Ctrl+L: Screen cleared, requesting new prompt");
+                                                }
+                                                egui::Key::M if modifiers.ctrl => {
+                                                    // Ctrl+M is same as Enter, but Enter is already handled above
+                                                    // Don't send duplicate
+                                                    // let _ = writer.write_all(b"\x0d");
+                                                }
+                                                egui::Key::N if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x0e");
+                                                    // Ctrl+N (Next line)
+                                                }
+                                                egui::Key::O if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x0f");
+                                                    // Ctrl+O
+                                                }
+                                                egui::Key::P if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x10");
+                                                    // Ctrl+P (Previous line)
+                                                }
+                                                egui::Key::Q if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x11");
+                                                    // Ctrl+Q (XON)
+                                                }
+                                                egui::Key::R if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x12");
+                                                    // Ctrl+R (Reverse search)
+                                                }
+                                                egui::Key::S if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x13");
+                                                    // Ctrl+S (XOFF)
+                                                }
+                                                egui::Key::T if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x14");
+                                                    // Ctrl+T (Transpose)
+                                                }
+                                                egui::Key::U if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x15");
+                                                    // Ctrl+U (Kill line backward)
+                                                }
+                                                egui::Key::V if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x16");
+                                                    // Ctrl+V (Literal next)
+                                                }
+                                                egui::Key::W if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x17");
+                                                    // Ctrl+W (Kill word backward)
+                                                }
+                                                egui::Key::X if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x18");
+                                                    // Ctrl+X
+                                                }
+                                                egui::Key::Y if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x19");
+                                                    // Ctrl+Y (Yank)
+                                                }
+                                                egui::Key::Z if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x1a");
+                                                    // Ctrl+Z (Suspend)
+                                                }
+                                                egui::Key::Enter if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x0d");
+                                                    // Ctrl+Enter (may be useful for gemini)
                                                 }
                                                 _ => {
                                                     // For other keys, don't need special handling
