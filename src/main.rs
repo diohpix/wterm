@@ -9,6 +9,44 @@ use std::thread;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
 
+// ANSI 색상 정보를 저장하는 구조체
+#[derive(Clone, Debug, PartialEq)]
+struct AnsiColor {
+    foreground: egui::Color32,
+    background: egui::Color32,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+}
+
+impl Default for AnsiColor {
+    fn default() -> Self {
+        Self {
+            foreground: egui::Color32::WHITE,
+            background: egui::Color32::TRANSPARENT,
+            bold: false,
+            italic: false,
+            underline: false,
+        }
+    }
+}
+
+// 터미널 셀 정보 (문자 + 색상)
+#[derive(Clone, Debug, PartialEq)]
+struct TerminalCell {
+    ch: char,
+    color: AnsiColor,
+}
+
+impl Default for TerminalCell {
+    fn default() -> Self {
+        Self {
+            ch: ' ',
+            color: AnsiColor::default(),
+        }
+    }
+}
+
 // 한글 입력 관련 상수
 const KOREAN_BASE: u32 = 0xAC00;
 const CHOSUNG_COUNT: u32 = 19;
@@ -165,6 +203,45 @@ fn is_vowel(ch: char) -> bool {
     matches!(ch, 'ㅏ'..='ㅣ')
 }
 
+// ANSI 256색 인덱스를 RGB로 변환
+fn ansi_256_to_rgb(color_idx: u8) -> egui::Color32 {
+    match color_idx {
+        // Standard colors (0-15)
+        0 => egui::Color32::BLACK,
+        1 => egui::Color32::from_rgb(128, 0, 0),
+        2 => egui::Color32::from_rgb(0, 128, 0),
+        3 => egui::Color32::from_rgb(128, 128, 0),
+        4 => egui::Color32::from_rgb(0, 0, 128),
+        5 => egui::Color32::from_rgb(128, 0, 128),
+        6 => egui::Color32::from_rgb(0, 128, 128),
+        7 => egui::Color32::from_rgb(192, 192, 192),
+        8 => egui::Color32::from_rgb(128, 128, 128),
+        9 => egui::Color32::from_rgb(255, 0, 0),
+        10 => egui::Color32::from_rgb(0, 255, 0),
+        11 => egui::Color32::from_rgb(255, 255, 0),
+        12 => egui::Color32::from_rgb(0, 0, 255),
+        13 => egui::Color32::from_rgb(255, 0, 255),
+        14 => egui::Color32::from_rgb(0, 255, 255),
+        15 => egui::Color32::WHITE,
+        // 216 color cube (16-231)
+        16..=231 => {
+            let idx = color_idx - 16;
+            let r = (idx / 36) % 6;
+            let g = (idx / 6) % 6;
+            let b = idx % 6;
+            let r = if r == 0 { 0 } else { 55 + r * 40 };
+            let g = if g == 0 { 0 } else { 55 + g * 40 };
+            let b = if b == 0 { 0 } else { 55 + b * 40 };
+            egui::Color32::from_rgb(r, g, b)
+        }
+        // Grayscale (232-255)
+        232..=255 => {
+            let gray = 8 + (color_idx - 232) * 10;
+            egui::Color32::from_rgb(gray, gray, gray)
+        }
+    }
+}
+
 // 한글 조합 상태 관리
 #[derive(Clone, Debug)]
 struct KoreanInputState {
@@ -216,22 +293,24 @@ impl KoreanInputState {
 // Terminal state structure
 #[derive(Clone)]
 struct TerminalState {
-    buffer: Vec<Vec<char>>,
+    buffer: Vec<Vec<TerminalCell>>,
     cursor_row: usize,
     cursor_col: usize,
     rows: usize,
     cols: usize,
+    current_color: AnsiColor, // 현재 색상 상태
 }
 
 impl TerminalState {
     fn new(rows: usize, cols: usize) -> Self {
-        let buffer = vec![vec![' '; cols]; rows];
+        let buffer = vec![vec![TerminalCell::default(); cols]; rows];
         Self {
             buffer,
             cursor_row: 0,
             cursor_col: 0,
             rows,
             cols,
+            current_color: AnsiColor::default(),
         }
     }
 
@@ -240,7 +319,7 @@ impl TerminalState {
         // Clear all content and reset cursor to top-left
         for row in &mut self.buffer {
             for cell in row {
-                *cell = ' ';
+                *cell = TerminalCell::default();
             }
         }
         self.cursor_row = 0;
@@ -253,9 +332,10 @@ impl TerminalState {
         }
 
         // Resize the buffer
-        self.buffer.resize(new_rows, vec![' '; new_cols]);
+        self.buffer
+            .resize(new_rows, vec![TerminalCell::default(); new_cols]);
         for row in &mut self.buffer {
-            row.resize(new_cols, ' ');
+            row.resize(new_cols, TerminalCell::default());
         }
 
         // Update dimensions
@@ -277,12 +357,18 @@ impl TerminalState {
         }
 
         if self.cursor_row < self.rows && self.cursor_col < self.cols {
-            // Place the character
-            self.buffer[self.cursor_row][self.cursor_col] = ch;
+            // Place the character with current color
+            self.buffer[self.cursor_row][self.cursor_col] = TerminalCell {
+                ch,
+                color: self.current_color.clone(),
+            };
 
             // For wide characters (width 2), mark the second cell as a continuation
             if char_width == 2 && self.cursor_col + 1 < self.cols {
-                self.buffer[self.cursor_row][self.cursor_col + 1] = '\u{0000}'; // Null char as continuation marker
+                self.buffer[self.cursor_row][self.cursor_col + 1] = TerminalCell {
+                    ch: '\u{0000}', // Null char as continuation marker
+                    color: self.current_color.clone(),
+                };
             }
 
             // Move cursor by the character width
@@ -301,7 +387,7 @@ impl TerminalState {
         if self.cursor_row >= self.rows {
             // Scroll up
             self.buffer.remove(0);
-            self.buffer.push(vec![' '; self.cols]);
+            self.buffer.push(vec![TerminalCell::default(); self.cols]);
             self.cursor_row = self.rows - 1;
         }
     }
@@ -316,18 +402,18 @@ impl TerminalState {
             let mut delete_col = self.cursor_col - 1;
 
             // If we're on a continuation marker (\u{0000}), move back to the actual character
-            while delete_col > 0 && self.buffer[self.cursor_row][delete_col] == '\u{0000}' {
+            while delete_col > 0 && self.buffer[self.cursor_row][delete_col].ch == '\u{0000}' {
                 delete_col -= 1;
             }
 
             // Get the character we're about to delete
-            let ch_to_delete = self.buffer[self.cursor_row][delete_col];
+            let ch_to_delete = self.buffer[self.cursor_row][delete_col].ch;
             let char_width = ch_to_delete.width().unwrap_or(1);
 
             // Clear the character and any continuation markers
             for i in 0..char_width {
                 if delete_col + i < self.cols {
-                    self.buffer[self.cursor_row][delete_col + i] = ' ';
+                    self.buffer[self.cursor_row][delete_col + i] = TerminalCell::default();
                 }
             }
 
@@ -352,7 +438,7 @@ impl TerminalState {
         if self.cursor_row < self.buffer.len() {
             for col in self.cursor_col..self.cols {
                 if col < self.buffer[self.cursor_row].len() {
-                    self.buffer[self.cursor_row][col] = ' ';
+                    self.buffer[self.cursor_row][col] = TerminalCell::default();
                 }
             }
         }
@@ -371,14 +457,14 @@ impl TerminalState {
             };
             for col in 0..=end_col {
                 if row < self.buffer.len() && col < self.buffer[row].len() {
-                    self.buffer[row][col] = ' ';
+                    self.buffer[row][col] = TerminalCell::default();
                 }
             }
         }
         // Clear from start of current line to cursor
         for col in 0..=self.cursor_col.min(self.cols.saturating_sub(1)) {
             if self.cursor_row < self.buffer.len() {
-                self.buffer[self.cursor_row][col] = ' ';
+                self.buffer[self.cursor_row][col] = TerminalCell::default();
             }
         }
     }
@@ -480,7 +566,7 @@ impl Perform for TerminalPerformer {
                                 if cursor_row < state.buffer.len()
                                     && col < state.buffer[cursor_row].len()
                                 {
-                                    state.buffer[cursor_row][col] = ' ';
+                                    state.buffer[cursor_row][col] = TerminalCell::default();
                                 }
                             }
                         }
@@ -490,7 +576,7 @@ impl Perform for TerminalPerformer {
                                 if cursor_row < state.buffer.len()
                                     && col < state.buffer[cursor_row].len()
                                 {
-                                    state.buffer[cursor_row][col] = ' ';
+                                    state.buffer[cursor_row][col] = TerminalCell::default();
                                 }
                             }
                         }
@@ -499,7 +585,7 @@ impl Perform for TerminalPerformer {
                             if cursor_row < state.buffer.len() {
                                 for col in 0..cols {
                                     if col < state.buffer[cursor_row].len() {
-                                        state.buffer[cursor_row][col] = ' ';
+                                        state.buffer[cursor_row][col] = TerminalCell::default();
                                     }
                                 }
                             }
@@ -533,7 +619,102 @@ impl Perform for TerminalPerformer {
                 }
                 'm' => {
                     // SGR (Select Graphic Rendition) - colors and text attributes
-                    // Silently ignore for now to reduce debug noise
+                    if params.is_empty() {
+                        // Reset to defaults
+                        state.current_color = AnsiColor::default();
+                    } else {
+                        for param in params.iter() {
+                            if let Some(&code) = param.first() {
+                                match code {
+                                    0 => state.current_color = AnsiColor::default(), // Reset
+                                    1 => state.current_color.bold = true,            // Bold
+                                    3 => state.current_color.italic = true,          // Italic
+                                    4 => state.current_color.underline = true,       // Underline
+                                    22 => state.current_color.bold = false, // Normal intensity
+                                    23 => state.current_color.italic = false, // Not italic
+                                    24 => state.current_color.underline = false, // Not underlined
+                                    // Foreground colors (8-color)
+                                    30 => state.current_color.foreground = egui::Color32::BLACK,
+                                    31 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(170, 0, 0)
+                                    }
+                                    32 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(0, 170, 0)
+                                    }
+                                    33 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(170, 85, 0)
+                                    }
+                                    34 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(0, 0, 170)
+                                    }
+                                    35 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(170, 0, 170)
+                                    }
+                                    36 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(0, 170, 170)
+                                    }
+                                    37 => {
+                                        state.current_color.foreground = egui::Color32::LIGHT_GRAY
+                                    }
+                                    // Bright foreground colors
+                                    90 => state.current_color.foreground = egui::Color32::GRAY,
+                                    91 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(255, 85, 85)
+                                    }
+                                    92 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(85, 255, 85)
+                                    }
+                                    93 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(255, 255, 85)
+                                    }
+                                    94 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(85, 85, 255)
+                                    }
+                                    95 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(255, 85, 255)
+                                    }
+                                    96 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(85, 255, 255)
+                                    }
+                                    97 => state.current_color.foreground = egui::Color32::WHITE,
+                                    // Default foreground
+                                    39 => state.current_color.foreground = egui::Color32::WHITE,
+                                    // Background colors (40-47, 100-107) can be added similarly
+                                    // 256-color and RGB support can be added for codes 38 and 48
+                                    _ => {
+                                        // Handle 256-color and RGB sequences
+                                        if code == 38 && param.len() >= 3 {
+                                            if param[1] == 5 && param.len() >= 3 {
+                                                // 256-color foreground: ESC[38;5;nm
+                                                let color_idx = param[2] as u8;
+                                                state.current_color.foreground =
+                                                    ansi_256_to_rgb(color_idx);
+                                            } else if param[1] == 2 && param.len() >= 5 {
+                                                // RGB foreground: ESC[38;2;r;g;bm
+                                                let r = param[2] as u8;
+                                                let g = param[3] as u8;
+                                                let b = param[4] as u8;
+                                                state.current_color.foreground =
+                                                    egui::Color32::from_rgb(r, g, b);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 'h' | 'l' => {
                     // Set Mode (h) / Reset Mode (l) - often used for terminal features
@@ -925,13 +1106,13 @@ impl eframe::App for TerminalApp {
                             let y = response.rect.top() + row_idx as f32 * line_height;
                             let mut col_offset = 0.0;
 
-                            for (col_idx, &ch) in row.iter().enumerate() {
+                            for (col_idx, cell) in row.iter().enumerate() {
                                 // Skip continuation markers for wide characters
-                                if ch == '\u{0000}' {
+                                if cell.ch == '\u{0000}' {
                                     continue;
                                 }
 
-                                let char_display_width = ch.width().unwrap_or(1);
+                                let char_display_width = cell.ch.width().unwrap_or(1);
                                 let display_width = char_display_width as f32 * char_width;
 
                                 let x = response.rect.left() + col_offset;
@@ -946,10 +1127,10 @@ impl eframe::App for TerminalApp {
                                         if self.korean_state.is_composing {
                                             composing_char
                                         } else {
-                                            ch
+                                            cell.ch
                                         }
                                     } else {
-                                        ch
+                                        cell.ch
                                     };
 
                                     // Calculate cursor width - Korean characters need wide cursor
@@ -988,9 +1169,9 @@ impl eframe::App for TerminalApp {
                                     painter.text(
                                         pos,
                                         egui::Align2::LEFT_TOP,
-                                        ch,
+                                        cell.ch,
                                         font_id.clone(),
-                                        egui::Color32::WHITE,
+                                        cell.color.foreground,
                                     );
                                 }
 
@@ -1027,7 +1208,10 @@ impl eframe::App for TerminalApp {
                                 match key {
                                     egui::Key::Enter => {
                                         self.finalize_korean_composition();
-                                        self.send_to_pty("\r");
+                                        if let Ok(mut writer) = self.pty_writer.lock() {
+                                            let _ = writer.write_all(b"\n");
+                                            let _ = writer.flush();
+                                        }
                                     }
                                     egui::Key::Space => {
                                         self.finalize_korean_composition();
