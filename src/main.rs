@@ -1023,55 +1023,71 @@ impl eframe::App for TerminalApp {
                                 modifiers,
                                 ..
                             } => {
-                                if let Ok(mut writer) = self.pty_writer.lock() {
-                                    match key {
-                                        egui::Key::Enter => {
-                                            let _ = writer.write_all(b"\r");
-                                        }
-                                        egui::Key::Backspace => {
-                                            let _ = writer.write_all(b"\x7f"); // DEL character
-                                        }
-                                        egui::Key::Tab => {
-                                            let _ = writer.write_all(b"\t");
-                                        }
-                                        egui::Key::Space => {
-                                            let _ = writer.write_all(b" ");
-                                        }
-                                        egui::Key::Escape => {
-                                            let _ = writer.write_all(b"\x1b");
-                                        }
-                                        egui::Key::ArrowUp => {
-                                            let _ = writer.write_all(b"\x1b[A");
-                                        }
-                                        egui::Key::ArrowDown => {
-                                            let _ = writer.write_all(b"\x1b[B");
-                                        }
-                                        egui::Key::ArrowRight => {
-                                            let _ = writer.write_all(b"\x1b[C");
-                                        }
-                                        egui::Key::ArrowLeft => {
-                                            let _ = writer.write_all(b"\x1b[D");
-                                        }
-                                        egui::Key::A if modifiers.ctrl => {
-                                            let _ = writer.write_all(b"\x01"); // Ctrl+A (Start of Heading)
-                                        }
-                                        egui::Key::C if modifiers.ctrl => {
-                                            let _ = writer.write_all(b"\x03"); // Ctrl+C
-                                        }
-                                        egui::Key::D if modifiers.ctrl => {
-                                            let _ = writer.write_all(b"\x04"); // Ctrl+D
-                                        }
-                                        egui::Key::E if modifiers.ctrl => {
-                                            let _ = writer.write_all(b"\x05"); // Ctrl+E (End of Text)
-                                        }
-                                        egui::Key::L if modifiers.ctrl => {
-                                            let _ = writer.write_all(b"\x0c"); // Ctrl+L (Form Feed)
-                                        }
-                                        _ => {
-                                            // For other keys, don't need special handling
+                                // Handle keys that should finalize Korean composition
+                                match key {
+                                    egui::Key::Enter => {
+                                        self.finalize_korean_composition();
+                                        self.send_to_pty("\r");
+                                    }
+                                    egui::Key::Space => {
+                                        self.finalize_korean_composition();
+                                        self.send_to_pty(" ");
+                                    }
+                                    egui::Key::Tab => {
+                                        self.finalize_korean_composition();
+                                        self.send_to_pty("\t");
+                                    }
+                                    egui::Key::Escape => {
+                                        self.finalize_korean_composition();
+                                        self.send_to_pty("\x1b");
+                                    }
+                                    _ => {
+                                        // For other keys, handle normally without composition finalization
+                                        if let Ok(mut writer) = self.pty_writer.lock() {
+                                            match key {
+                                                egui::Key::Backspace => {
+                                                    let _ = writer.write_all(b"\x7f");
+                                                    // DEL character
+                                                }
+                                                egui::Key::ArrowUp => {
+                                                    let _ = writer.write_all(b"\x1b[A");
+                                                }
+                                                egui::Key::ArrowDown => {
+                                                    let _ = writer.write_all(b"\x1b[B");
+                                                }
+                                                egui::Key::ArrowRight => {
+                                                    let _ = writer.write_all(b"\x1b[C");
+                                                }
+                                                egui::Key::ArrowLeft => {
+                                                    let _ = writer.write_all(b"\x1b[D");
+                                                }
+                                                egui::Key::A if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x01");
+                                                    // Ctrl+A (Start of Heading)
+                                                }
+                                                egui::Key::C if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x03");
+                                                    // Ctrl+C
+                                                }
+                                                egui::Key::D if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x04");
+                                                    // Ctrl+D
+                                                }
+                                                egui::Key::E if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x05");
+                                                    // Ctrl+E (End of Text)
+                                                }
+                                                egui::Key::L if modifiers.ctrl => {
+                                                    let _ = writer.write_all(b"\x0c");
+                                                    // Ctrl+L (Form Feed)
+                                                }
+                                                _ => {
+                                                    // For other keys, don't need special handling
+                                                }
+                                            }
+                                            let _ = writer.flush();
                                         }
                                     }
-                                    let _ = writer.flush();
                                 }
                             }
                             egui::Event::Text(text) => {
