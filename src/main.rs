@@ -544,23 +544,21 @@ impl TerminalState {
             self.saved_cursor_main = (self.cursor_row, self.cursor_col);
             
             // Switch to alternative screen (start with clean screen)
-            self.buffer = self.alt_buffer.clone();
-            self.cursor_row = self.saved_cursor_alt.0;
-            self.cursor_col = self.saved_cursor_alt.1;
+            // Create a completely clean alt screen buffer
+            self.buffer = vec![vec![TerminalCell::default(); self.cols]; self.rows];
+            self.cursor_row = 0;
+            self.cursor_col = 0;
             self.is_alt_screen = true;
             
-            println!("🔄 Switched to alternative screen buffer");
+            println!("🔄 Switched to alternative screen buffer (clean screen)");
         }
     }
 
     // Switch back to main screen buffer
     fn switch_to_main_screen(&mut self) {
         if self.is_alt_screen {
-            // Save current alt screen state
-            self.alt_buffer = self.buffer.clone();
-            self.saved_cursor_alt = (self.cursor_row, self.cursor_col);
-            
-            // Restore main screen
+            // Don't save alt screen state - each app gets a clean alt screen
+            // Just restore main screen
             self.buffer = self.main_buffer.clone();
             self.cursor_row = self.saved_cursor_main.0;
             self.cursor_col = self.saved_cursor_main.1;
