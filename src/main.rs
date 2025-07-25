@@ -286,6 +286,33 @@ impl KoreanInputState {
     fn is_complete(&self) -> bool {
         self.chosung.is_some() && self.jungsung.is_some()
     }
+
+    // 백스페이스 처리 - 단계별로 조합 되돌리기
+    fn handle_backspace(&mut self) -> bool {
+        if !self.is_composing {
+            return false; // 조합 중이 아니면 처리하지 않음
+        }
+
+        // 종성이 있으면 종성부터 제거
+        if self.jongsung.is_some() {
+            self.jongsung = None;
+            return true; // 조합 상태 유지
+        }
+
+        // 중성이 있으면 중성 제거
+        if self.jungsung.is_some() {
+            self.jungsung = None;
+            return true; // 조합 상태 유지 (초성만 남음)
+        }
+
+        // 초성만 있으면 조합 완전 취소
+        if self.chosung.is_some() {
+            self.reset();
+            return false; // 조합 완전 종료
+        }
+
+        false
+    }
 }
 
 // 터미널 상태 구조체와 VTE 처리 코드
@@ -878,10 +905,16 @@ impl TerminalApp {
 
     // Finalize any pending Korean composition
     fn finalize_korean_composition(&mut self) {
+        println!(
+            "DEBUG: finalize_korean_composition called, is_composing: {}",
+            self.korean_state.is_composing
+        );
         if self.korean_state.is_composing {
             if let Some(completed) = self.korean_state.get_current_char() {
+                println!("DEBUG: Completing Korean character: '{}'", completed);
                 self.send_to_pty(&completed.to_string());
             }
+            println!("DEBUG: Resetting Korean state");
             self.korean_state.reset();
         }
     }
@@ -1194,7 +1227,28 @@ impl eframe::App for TerminalApp {
                 });
 
             // Handle keyboard input when terminal has focus
-            if ui.memory(|mem| mem.has_focus(terminal_response.inner.id)) {
+            let has_focus = ui.memory(|mem| mem.has_focus(terminal_response.inner.id));
+
+            // Handle ESC key specially using direct input check
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                println!(
+                    "DEBUG: ESC key detected, is_composing: {}",
+                    self.korean_state.is_composing
+                );
+                if self.korean_state.is_composing {
+                    // 조합 중이면 조합만 완성하고 ESC는 무시
+                    println!("DEBUG: Finalizing Korean composition due to ESC");
+                    self.finalize_korean_composition();
+                } else {
+                    // 조합 중이 아니면 정상적으로 ESC 처리
+                    println!("DEBUG: Sending ESC to PTY");
+                    self.send_to_pty("\x1b");
+                }
+                // Force maintain focus after ESC
+                ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
+            }
+
+            if has_focus {
                 ctx.input(|i| {
                     for event in &i.events {
                         match event {
@@ -1204,6 +1258,8 @@ impl eframe::App for TerminalApp {
                                 modifiers,
                                 ..
                             } => {
+                                println!("DEBUG: Key event received: {:?}, pressed: true", key);
+
                                 // Handle keys that should finalize Korean composition
                                 match key {
                                     egui::Key::Enter => {
@@ -1221,30 +1277,69 @@ impl eframe::App for TerminalApp {
                                         self.finalize_korean_composition();
                                         self.send_to_pty("\t");
                                     }
-                                    egui::Key::Escape => {
-                                        self.finalize_korean_composition();
-                                        self.send_to_pty("\x1b");
+
+                                    egui::Key::Backspace => {
+                                        // Handle backspace for Korean composition
+                                        if self.korean_state.is_composing {
+                                            // Step-by-step Korean composition backspace
+                                            let still_composing =
+                                                self.korean_state.handle_backspace();
+                                            if !still_composing {
+                                                // Composition ended, now do normal backspace
+                                                if let Ok(mut writer) = self.pty_writer.lock() {
+                                                    let _ = writer.write_all(b"\x7f");
+                                                    let _ = writer.flush();
+                                                }
+                                            }
+                                            // If still_composing is true, just update visual without sending to PTY
+                                        } else {
+                                            // Normal backspace behavior
+                                            if let Ok(mut writer) = self.pty_writer.lock() {
+                                                let _ = writer.write_all(b"\x7f");
+                                                let _ = writer.flush();
+                                            }
+                                        }
+                                    }
+                                    egui::Key::ArrowUp => {
+                                        if self.korean_state.is_composing {
+                                            // 조합 중이면 조합만 완성하고 화살표는 무시
+                                            self.finalize_korean_composition();
+                                        } else {
+                                            // 조합 중이 아니면 정상적으로 화살표 키 처리
+                                            self.send_to_pty("\x1b[A");
+                                        }
+                                    }
+                                    egui::Key::ArrowDown => {
+                                        if self.korean_state.is_composing {
+                                            // 조합 중이면 조합만 완성하고 화살표는 무시
+                                            self.finalize_korean_composition();
+                                        } else {
+                                            // 조합 중이 아니면 정상적으로 화살표 키 처리
+                                            self.send_to_pty("\x1b[B");
+                                        }
+                                    }
+                                    egui::Key::ArrowRight => {
+                                        if self.korean_state.is_composing {
+                                            // 조합 중이면 조합만 완성하고 화살표는 무시
+                                            self.finalize_korean_composition();
+                                        } else {
+                                            // 조합 중이 아니면 정상적으로 화살표 키 처리
+                                            self.send_to_pty("\x1b[C");
+                                        }
+                                    }
+                                    egui::Key::ArrowLeft => {
+                                        if self.korean_state.is_composing {
+                                            // 조합 중이면 조합만 완성하고 화살표는 무시
+                                            self.finalize_korean_composition();
+                                        } else {
+                                            // 조합 중이 아니면 정상적으로 화살표 키 처리
+                                            self.send_to_pty("\x1b[D");
+                                        }
                                     }
                                     _ => {
                                         // For other keys, handle normally without composition finalization
                                         if let Ok(mut writer) = self.pty_writer.lock() {
                                             match key {
-                                                egui::Key::Backspace => {
-                                                    let _ = writer.write_all(b"\x7f");
-                                                    // DEL character
-                                                }
-                                                egui::Key::ArrowUp => {
-                                                    let _ = writer.write_all(b"\x1b[A");
-                                                }
-                                                egui::Key::ArrowDown => {
-                                                    let _ = writer.write_all(b"\x1b[B");
-                                                }
-                                                egui::Key::ArrowRight => {
-                                                    let _ = writer.write_all(b"\x1b[C");
-                                                }
-                                                egui::Key::ArrowLeft => {
-                                                    let _ = writer.write_all(b"\x1b[D");
-                                                }
                                                 egui::Key::A if modifiers.ctrl => {
                                                     let _ = writer.write_all(b"\x01");
                                                     // Ctrl+A (Start of Heading)
