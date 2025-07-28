@@ -1174,7 +1174,7 @@ impl TerminalApp {
         let d2coding_font_data = include_bytes!("../assets/fonts/D2Coding.ttf");
         fonts.font_data.insert(
             "D2Coding".to_owned(),
-            egui::FontData::from_static(d2coding_font_data),
+            std::sync::Arc::new(egui::FontData::from_static(d2coding_font_data)),
         );
 
         // Set D2Coding as the primary monospace font, but keep existing fallbacks
@@ -1246,9 +1246,8 @@ impl TerminalApp {
                         println!();
                         io::stdout().flush().unwrap_or(());
 
-                        for &byte in &buffer[..n] {
-                            parser.advance(&mut performer, byte);
-                        }
+                        // Process all bytes at once using VTE 0.15 API
+                        parser.advance(&mut performer, &buffer[..n]);
                     }
                     Err(_) => break,
                 }
@@ -1344,7 +1343,7 @@ impl eframe::App for TerminalApp {
 
             // Terminal display with focus handling and proper scrolling
             let terminal_response = egui::ScrollArea::vertical()
-                .id_source("terminal_scroll")
+                .id_salt("terminal_scroll")
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     // Calculate exact font metrics
@@ -1367,7 +1366,7 @@ impl eframe::App for TerminalApp {
                         // Draw terminal background (macOS Terminal style black background)
                         painter.rect_filled(
                             response.rect,
-                            egui::Rounding::ZERO,
+                            egui::CornerRadius::ZERO,
                             egui::Color32::BLACK,
                         );
 
@@ -1384,7 +1383,7 @@ impl eframe::App for TerminalApp {
                         
                         // Force focus when any interaction happens
                         let interaction = response.interact(egui::Sense::click_and_drag());
-                        if interaction.clicked || interaction.dragged || interaction.hovered() {
+                        if interaction.clicked() || interaction.dragged() || interaction.hovered() {
                             ui.memory_mut(|mem| mem.request_focus(response.id));
                         }
                         
@@ -1424,7 +1423,7 @@ impl eframe::App for TerminalApp {
                                 {
                                     painter.rect_filled(
                                         cell_rect,
-                                        egui::Rounding::ZERO,
+                                        egui::CornerRadius::ZERO,
                                         cell.color.background,
                                     );
                                 }
@@ -1531,7 +1530,7 @@ impl eframe::App for TerminalApp {
                                         egui::Pos2::new(cursor_x, cursor_y),
                                         egui::Vec2::new(cursor_width, line_height),
                                     ),
-                                    egui::Rounding::ZERO,
+                                    egui::CornerRadius::ZERO,
                                     preview_bg,
                                 );
                                 
@@ -1560,7 +1559,7 @@ impl eframe::App for TerminalApp {
                                     egui::Pos2::new(cursor_x, cursor_line_y),
                                     egui::Vec2::new(cursor_width, cursor_line_thickness),
                                 ),
-                                egui::Rounding::ZERO,
+                                egui::CornerRadius::ZERO,
                                 cursor_color,
                             );
                         }
