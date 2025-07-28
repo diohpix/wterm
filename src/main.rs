@@ -578,11 +578,12 @@ impl TerminalState {
 // VTE Performer implementation
 struct TerminalPerformer {
     state: Arc<Mutex<TerminalState>>,
+    needs_repaint: Arc<Mutex<bool>>,
 }
 
 impl TerminalPerformer {
-    fn new(state: Arc<Mutex<TerminalState>>) -> Self {
-        Self { state }
+    fn new(state: Arc<Mutex<TerminalState>>, needs_repaint: Arc<Mutex<bool>>) -> Self {
+        Self { state, needs_repaint }
     }
 }
 
@@ -597,19 +598,28 @@ impl Perform for TerminalPerformer {
             }
             io::stdout().flush().unwrap_or(());
             state.put_char(c);
+            
+            // Signal that repaint is needed
+            if let Ok(mut needs_repaint) = self.needs_repaint.lock() {
+                *needs_repaint = true;
+            }
         }
     }
 
     fn execute(&mut self, byte: u8) {
         if let Ok(mut state) = self.state.lock() {
+            let mut state_changed = false;
+            
             match byte {
                 b'\n' => {
                     println!("📄 Newline");
                     state.newline();
+                    state_changed = true;
                 }
                 b'\r' => {
                     println!("🔄 Carriage return");
                     state.carriage_return();
+                    state_changed = true;
                 }
                 b'\x08' => {
                     // Backspace (Ctrl+H) - block if arrow key was recently pressed or would enter prompt
@@ -618,6 +628,7 @@ impl Perform for TerminalPerformer {
                     } else {
                         println!("⬅️ Backspace \\x08 (processing with prompt protection)");
                         state.backspace(); // Now has prompt protection built-in
+                        state_changed = true;
                     }
                 }
                 b'\x09' => {
@@ -627,10 +638,12 @@ impl Perform for TerminalPerformer {
                     if next_tab_stop < state.cols {
                         state.cursor_col = next_tab_stop;
                         println!("🔄 Tab: cursor moved to column {}", state.cursor_col);
+                        state_changed = true;
                     } else {
                         // If tab would go beyond line, go to end of line
                         state.cursor_col = state.cols - 1;
                         println!("🔄 Tab: cursor moved to end of line ({})", state.cursor_col);
+                        state_changed = true;
                     }
                 }
                 b'\x0c' => {
@@ -638,6 +651,7 @@ impl Perform for TerminalPerformer {
                     state.clear_arrow_key_protection();
                     state.clear_screen();
                     println!("🧹 Form Feed - screen cleared");
+                    state_changed = true;
                 }
                 b'\x7f' => {
                     // DEL character - block if arrow key was recently pressed or would enter prompt
@@ -646,6 +660,7 @@ impl Perform for TerminalPerformer {
                     } else {
                         println!("🗑️ DEL \\x7f (processing with prompt protection)");
                         state.backspace(); // Now has prompt protection built-in
+                        state_changed = true;
                     }
                 }
                 _ => {
@@ -653,6 +668,13 @@ impl Perform for TerminalPerformer {
                     if byte < 32 {
                         println!("❓ Control char: 0x{:02x}", byte);
                     }
+                }
+            }
+            
+            // Signal repaint if state changed
+            if state_changed {
+                if let Ok(mut needs_repaint) = self.needs_repaint.lock() {
+                    *needs_repaint = true;
                 }
             }
         }
@@ -693,6 +715,8 @@ impl Perform for TerminalPerformer {
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
         if let Ok(mut state) = self.state.lock() {
+            let mut state_changed = false;
+            
             // Debug: Print CSI commands to understand what's happening
             let param_values: Vec<u16> = params
                 .iter()
@@ -713,6 +737,7 @@ impl Perform for TerminalPerformer {
                     let row = params.iter().next().unwrap_or(&[1])[0].saturating_sub(1) as usize;
                     let col = params.iter().nth(1).unwrap_or(&[1])[0].saturating_sub(1) as usize;
                     state.move_cursor_to(row, col);
+                    state_changed = true;
                 }
                 'J' => {
                     // ED (Erase in Display) - COMPLETELY BLOCK ALL to prevent text deletion
@@ -768,6 +793,7 @@ impl Perform for TerminalPerformer {
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
                     state.cursor_row = state.cursor_row.saturating_sub(count);
                     state.set_arrow_key_protection();
+                    state_changed = true;
                     println!("⬆️ Cursor UP by {}", count);
                 }
                 'B' => {
@@ -775,6 +801,7 @@ impl Perform for TerminalPerformer {
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
                     state.cursor_row = (state.cursor_row + count).min(rows - 1);
                     state.set_arrow_key_protection();
+                    state_changed = true;
                     println!("⬇️ Cursor DOWN by {}", count);
                 }
                 'C' => {
@@ -782,6 +809,7 @@ impl Perform for TerminalPerformer {
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
                     state.cursor_col = (state.cursor_col + count).min(cols - 1);
                     state.set_arrow_key_protection();
+                    state_changed = true;
                     println!("➡️ Cursor RIGHT by {}", count);
                 }
                 'D' => {
@@ -789,6 +817,7 @@ impl Perform for TerminalPerformer {
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
                     state.cursor_col = state.cursor_col.saturating_sub(count);
                     state.set_arrow_key_protection();
+                    state_changed = true;
                     println!("⬅️ Cursor LEFT by {}", count);
                 }
                 'm' => {
@@ -923,6 +952,7 @@ impl Perform for TerminalPerformer {
                             i += 1;
                         }
                     }
+                    state_changed = true; // Colors changed
                 }
                 'h' | 'l' => {
                     // Set Mode (h) / Reset Mode (l) - often used for terminal features
@@ -971,11 +1001,13 @@ impl Perform for TerminalPerformer {
                     // VPA (Vertical Position Absolute)
                     let row = params.iter().next().unwrap_or(&[1])[0].saturating_sub(1) as usize;
                     state.cursor_row = row.min(rows - 1);
+                    state_changed = true;
                 }
                 'G' => {
                     // CHA (Cursor Horizontal Absolute)
                     let col = params.iter().next().unwrap_or(&[1])[0].saturating_sub(1) as usize;
                     state.cursor_col = col.min(cols - 1);
+                    state_changed = true;
                 }
                 't' => {
                     // Window manipulation sequences - ignore
@@ -1025,6 +1057,13 @@ impl Perform for TerminalPerformer {
                     // This helps with compatibility with complex prompts
                 }
             }
+            
+            // Signal repaint if state changed
+            if state_changed {
+                if let Ok(mut needs_repaint) = self.needs_repaint.lock() {
+                    *needs_repaint = true;
+                }
+            }
         }
     }
 
@@ -1038,6 +1077,8 @@ pub struct TerminalApp {
     pty_master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     korean_state: KoreanInputState,
     last_tab_time: Option<Instant>,  // Tab key debouncing
+    last_cursor_pos: (usize, usize),   // Track cursor position for auto-scroll
+    needs_repaint: Arc<Mutex<bool>>,   // Track if repaint is needed
 }
 
 impl TerminalApp {
@@ -1223,11 +1264,15 @@ impl TerminalApp {
         let pty_writer = Arc::new(Mutex::new(pty_pair.master.take_writer()?));
         let pty_master = Arc::new(Mutex::new(pty_pair.master));
 
+        // Create needs_repaint flag and clone for thread
+        let needs_repaint = Arc::new(Mutex::new(true)); // Initial repaint needed
+        let needs_repaint_clone = needs_repaint.clone();
+
         // Spawn background thread to read from PTY
         let state_clone = terminal_state.clone();
         thread::spawn(move || {
             let mut parser = Parser::new();
-            let mut performer = TerminalPerformer::new(state_clone);
+            let mut performer = TerminalPerformer::new(state_clone, needs_repaint_clone);
 
             let mut buffer = [0u8; 1024];
             loop {
@@ -1260,6 +1305,8 @@ impl TerminalApp {
             pty_master,
             korean_state: KoreanInputState::new(),
             last_tab_time: None,
+            last_cursor_pos: (0, 0),
+            needs_repaint,
         })
     }
 
@@ -1564,13 +1611,17 @@ impl eframe::App for TerminalApp {
                             );
                         }
 
-                        // Auto-scroll to cursor position
-                        let cursor_y = state.cursor_row as f32 * line_height;
-                        let cursor_rect = egui::Rect::from_min_size(
-                            egui::Pos2::new(0.0, cursor_y),
-                            egui::Vec2::new(char_width, line_height),
-                        );
-                        ui.scroll_to_rect(cursor_rect, Some(egui::Align::Center));
+                        // Auto-scroll to cursor position only if cursor moved
+                        let current_cursor_pos = (state.cursor_row, state.cursor_col);
+                        if current_cursor_pos != self.last_cursor_pos {
+                            let cursor_y = state.cursor_row as f32 * line_height;
+                            let cursor_rect = egui::Rect::from_min_size(
+                                egui::Pos2::new(0.0, cursor_y),
+                                egui::Vec2::new(char_width, line_height),
+                            );
+                            ui.scroll_to_rect(cursor_rect, Some(egui::Align::Center));
+                            self.last_cursor_pos = current_cursor_pos;
+                        }
 
                         response
                     } else {
@@ -2044,8 +2095,13 @@ impl eframe::App for TerminalApp {
             }
         });
 
-        // Request repaint to keep updating
-        ctx.request_repaint();
+        // Request repaint only if needed
+        if let Ok(mut needs_repaint) = self.needs_repaint.lock() {
+            if *needs_repaint {
+                ctx.request_repaint();
+                *needs_repaint = false; // Reset flag after requesting repaint
+            }
+        }
     }
 }
 
