@@ -1,0 +1,552 @@
+use crate::terminal::state::{AnsiColor, TerminalCell, TerminalState};
+use crate::utils::color::ansi_256_to_rgb;
+use eframe::egui;
+use std::sync::{Arc, Mutex};
+use vte::{Params, Perform};
+
+// VTE Performer implementation
+pub struct TerminalPerformer {
+    state: Arc<Mutex<TerminalState>>,
+    egui_ctx: egui::Context,
+}
+
+impl TerminalPerformer {
+    pub fn new(state: Arc<Mutex<TerminalState>>, egui_ctx: egui::Context) -> Self {
+        Self { state, egui_ctx }
+    }
+}
+
+impl Perform for TerminalPerformer {
+    fn print(&mut self, c: char) {
+        if let Ok(mut state) = self.state.lock() {
+            // Filter out space characters at the beginning of a line. This is a common
+            // artifact from oh-my-zsh's prompt rendering after a newline, which
+            // can cause an extra empty-looking line to appear between prompts.
+            if c == ' ' && state.cursor_col == 0 {
+                //return; // Skip printing this character.
+            }
+
+            state.put_char(c);
+            self.egui_ctx.request_repaint();
+        }
+    }
+
+    fn execute(&mut self, byte: u8) {
+        if let Ok(mut state) = self.state.lock() {
+            let mut state_changed = false;
+
+            match byte {
+                b'\n' => {
+                    println!("🖥️ DEBUG: VTE execute \\n (newline)");
+                    state.newline();
+                    state_changed = true;
+                }
+                b'\r' => {
+                    // Process carriage return but don't trigger newline
+                    println!("🖥️ DEBUG: VTE execute \\r (carriage return only)");
+                    //state.carriage_return();
+                    //state_changed = true;
+                }
+                b'\x08' => {
+                    if !state.should_protect_from_arrow_key() {
+                        state.backspace();
+                        state_changed = true;
+                    }
+                }
+                b'\x09' => {
+                    let next_tab_stop = ((state.cursor_col / 8) + 1) * 8;
+                    if next_tab_stop < state.cols {
+                        state.cursor_col = next_tab_stop;
+                    } else {
+                        state.cursor_col = state.cols - 1;
+                    }
+                    state_changed = true;
+                }
+                b'\x0c' => {
+                    state.clear_arrow_key_protection();
+                    state.clear_screen();
+                    state_changed = true;
+                }
+                b'\x7f' => {
+                    if !state.should_protect_from_arrow_key() {
+                        state.backspace();
+                        state_changed = true;
+                    }
+                }
+                _ => {}
+            }
+
+            if state_changed {
+                self.egui_ctx.request_repaint();
+            }
+        }
+    }
+
+    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _c: char) {
+        // No-op
+    }
+
+    fn put(&mut self, _byte: u8) {
+        // No-op
+    }
+
+    fn unhook(&mut self) {
+        // No-op
+    }
+
+    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
+        // No-op
+    }
+
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
+        if let Ok(mut state) = self.state.lock() {
+            let mut state_changed = false;
+
+            let cols = state.cols;
+            match c {
+                'H' | 'f' => {
+                    // CUP (Cursor Position) or HVP (Horizontal and Vertical Position)
+                    let row = params.iter().next().unwrap_or(&[1])[0].saturating_sub(1) as usize;
+                    let col = params.iter().nth(1).unwrap_or(&[1])[0].saturating_sub(1) as usize;
+                    state.move_cursor_to(row, col);
+                    state_changed = true;
+                }
+                'J' => {
+                    // ED (Erase in Display) - Allow normally for proper terminal function
+                    let param = params.iter().next().unwrap_or(&[0])[0];
+                    match param {
+                        0 => {
+                            // Clear from cursor to end of display
+                            for row in state.cursor_row..state.rows {
+                                let start_col = if row == state.cursor_row {
+                                    state.cursor_col
+                                } else {
+                                    0
+                                };
+                                for col in start_col..state.cols {
+                                    if row < state.screen.len() && col < state.screen[row].len() {
+                                        state.screen[row][col] = TerminalCell::default();
+                                    }
+                                }
+                            }
+                            state_changed = true;
+                        }
+                        1 => {
+                            // Clear from start of display to cursor
+                            for row in 0..=state.cursor_row {
+                                let end_col = if row == state.cursor_row {
+                                    state.cursor_col
+                                } else {
+                                    state.cols
+                                };
+                                for col in 0..end_col {
+                                    if row < state.screen.len() && col < state.screen[row].len() {
+                                        state.screen[row][col] = TerminalCell::default();
+                                    }
+                                }
+                            }
+                            state_changed = true;
+                        }
+                        2 => {
+                            // Clear entire display
+                            state.scrollback.clear();
+                            state.clear_screen();
+                            state_changed = true;
+                        }
+                        3 => {
+                            // Clear display and scrollback (same as clear screen for us)
+                            state.scrollback.clear();
+                            state.clear_screen();
+                            state_changed = true;
+                        }
+                        _ => {
+                            // Unknown parameter, ignore
+                        }
+                    }
+                }
+                'K' => {
+                    // EL (Erase in Line) - Allow normally for proper terminal function
+                    let param = params.iter().next().unwrap_or(&[0])[0];
+                    let current_row = state.cursor_row;
+                    let current_col = state.cursor_col;
+                    let cols = state.cols;
+
+                    match param {
+                        0 => {
+                            // Clear from cursor to end of line
+                            if current_row < state.screen.len() {
+                                for col in current_col..cols {
+                                    if col < state.screen[current_row].len() {
+                                        state.screen[current_row][col] = TerminalCell::default();
+                                    }
+                                }
+                            }
+                            state_changed = true;
+                        }
+                        1 => {
+                            // Clear from start of line to cursor
+                            if current_row < state.screen.len() {
+                                for col in 0..=current_col {
+                                    if col < state.screen[current_row].len() {
+                                        state.screen[current_row][col] = TerminalCell::default();
+                                    }
+                                }
+                            }
+                            state_changed = true;
+                        }
+                        2 => {
+                            // Clear entire line
+                            if current_row < state.screen.len() {
+                                for col in 0..cols {
+                                    if col < state.screen[current_row].len() {
+                                        state.screen[current_row][col] = TerminalCell::default();
+                                    }
+                                }
+                            }
+                            state_changed = true;
+                        }
+                        _ => {
+                            // Unknown parameter, ignore
+                        }
+                    }
+                }
+                'A' => {
+                    // CUU (Cursor Up) - ALWAYS ALLOW cursor movement
+                    let count = params.iter().next().unwrap_or(&[1])[0] as usize;
+                    state.cursor_row = state.cursor_row.saturating_sub(count);
+                    state.set_arrow_key_protection();
+                    state_changed = true;
+                }
+                'B' => {
+                    // CUD (Cursor Down) - ALWAYS ALLOW cursor movement
+                    let count = params.iter().next().unwrap_or(&[1])[0] as usize;
+                    state.cursor_row = (state.cursor_row + count).min(state.rows - 1);
+                    state.set_arrow_key_protection();
+                    state_changed = true;
+                }
+                'C' => {
+                    // CUF (Cursor Forward) - ALWAYS ALLOW cursor movement
+                    let count = params.iter().next().unwrap_or(&[1])[0] as usize;
+                    state.cursor_col = (state.cursor_col + count).min(cols - 1);
+                    state.set_arrow_key_protection();
+                    state_changed = true;
+                }
+                'D' => {
+                    // CUB (Cursor Backward) - ALWAYS ALLOW cursor movement
+                    let count = params.iter().next().unwrap_or(&[1])[0] as usize;
+                    state.cursor_col = state.cursor_col.saturating_sub(count);
+                    state.set_arrow_key_protection();
+                    state_changed = true;
+                }
+                'm' => {
+                    // SGR (Select Graphic Rendition) - colors and text attributes
+                    if params.is_empty() {
+                        // Reset to defaults
+                        state.current_color = AnsiColor::default();
+                    } else {
+                        // Process SGR parameters sequentially, handling multi-parameter sequences
+                        let param_vec: Vec<_> = params.iter().collect();
+                        let mut i = 0;
+                        while i < param_vec.len() {
+                            if let Some(&code) = param_vec[i].first() {
+                                match code {
+                                    0 => state.current_color = AnsiColor::default(), // Reset
+                                    1 => state.current_color.bold = true,            // Bold
+                                    3 => state.current_color.italic = true,          // Italic
+                                    4 => state.current_color.underline = true,       // Underline
+                                    7 => state.current_color.reverse = true, // Reverse video
+                                    22 => state.current_color.bold = false,  // Normal intensity
+                                    23 => state.current_color.italic = false, // Not italic
+                                    24 => state.current_color.underline = false, // Not underlined
+                                    27 => state.current_color.reverse = false, // Not reversed
+                                    // Foreground colors (8-color) - macOS Terminal compatible
+                                    30 => state.current_color.foreground = ansi_256_to_rgb(0), // Black
+                                    31 => state.current_color.foreground = ansi_256_to_rgb(1), // Red
+                                    32 => state.current_color.foreground = ansi_256_to_rgb(2), // Green
+                                    33 => state.current_color.foreground = ansi_256_to_rgb(3), // Yellow
+                                    34 => state.current_color.foreground = ansi_256_to_rgb(4), // Blue
+                                    35 => state.current_color.foreground = ansi_256_to_rgb(5), // Magenta
+                                    36 => state.current_color.foreground = ansi_256_to_rgb(6), // Cyan
+                                    37 => state.current_color.foreground = ansi_256_to_rgb(7), // White
+                                    // Bright foreground colors
+                                    90 => state.current_color.foreground = ansi_256_to_rgb(8), // Bright Black
+                                    91 => state.current_color.foreground = ansi_256_to_rgb(9), // Bright Red
+                                    92 => state.current_color.foreground = ansi_256_to_rgb(10), // Bright Green
+                                    93 => state.current_color.foreground = ansi_256_to_rgb(11), // Bright Yellow
+                                    94 => state.current_color.foreground = ansi_256_to_rgb(12), // Bright Blue
+                                    95 => state.current_color.foreground = ansi_256_to_rgb(13), // Bright Magenta
+                                    96 => state.current_color.foreground = ansi_256_to_rgb(14), // Bright Cyan
+                                    97 => state.current_color.foreground = ansi_256_to_rgb(15), // Bright White
+                                    // Background colors (40-47)
+                                    40 => state.current_color.background = ansi_256_to_rgb(0), // Black
+                                    41 => state.current_color.background = ansi_256_to_rgb(1), // Red
+                                    42 => state.current_color.background = ansi_256_to_rgb(2), // Green
+                                    43 => state.current_color.background = ansi_256_to_rgb(3), // Yellow
+                                    44 => state.current_color.background = ansi_256_to_rgb(4), // Blue
+                                    45 => state.current_color.background = ansi_256_to_rgb(5), // Magenta
+                                    46 => state.current_color.background = ansi_256_to_rgb(6), // Cyan
+                                    47 => state.current_color.background = ansi_256_to_rgb(7), // White
+                                    // Bright background colors (100-107)
+                                    100 => state.current_color.background = ansi_256_to_rgb(8), // Bright Black
+                                    101 => state.current_color.background = ansi_256_to_rgb(9), // Bright Red
+                                    102 => state.current_color.background = ansi_256_to_rgb(10), // Bright Green
+                                    103 => state.current_color.background = ansi_256_to_rgb(11), // Bright Yellow
+                                    104 => state.current_color.background = ansi_256_to_rgb(12), // Bright Blue
+                                    105 => state.current_color.background = ansi_256_to_rgb(13), // Bright Magenta
+                                    106 => state.current_color.background = ansi_256_to_rgb(14), // Bright Cyan
+                                    107 => state.current_color.background = ansi_256_to_rgb(15), // Bright White
+                                    // Default colors
+                                    39 => {
+                                        state.current_color.foreground =
+                                            egui::Color32::from_rgb(203, 204, 205)
+                                    } // Default foreground
+                                    49 => {
+                                        state.current_color.background = egui::Color32::TRANSPARENT
+                                    } // Default background
+                                    // Extended color sequences
+                                    38 => {
+                                        // Foreground color: 38;5;n or 38;2;r;g;b
+                                        if i + 2 < param_vec.len() {
+                                            if let Some(&subtype) = param_vec[i + 1].first() {
+                                                if subtype == 5 && i + 2 < param_vec.len() {
+                                                    // 256-color: ESC[38;5;nm
+                                                    if let Some(&color_idx) =
+                                                        param_vec[i + 2].first()
+                                                    {
+                                                        state.current_color.foreground =
+                                                            ansi_256_to_rgb(color_idx as u8);
+                                                        i += 2; // Skip the next 2 parameters
+                                                    }
+                                                } else if subtype == 2 && i + 4 < param_vec.len() {
+                                                    // RGB: ESC[38;2;r;g;bm
+                                                    if let (Some(&r), Some(&g), Some(&b)) = (
+                                                        param_vec[i + 2].first(),
+                                                        param_vec[i + 3].first(),
+                                                        param_vec[i + 4].first(),
+                                                    ) {
+                                                        state.current_color.foreground =
+                                                            egui::Color32::from_rgb(
+                                                                r as u8, g as u8, b as u8,
+                                                            );
+                                                        i += 4; // Skip the next 4 parameters
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    48 => {
+                                        // Background color: 48;5;n or 48;2;r;g;b
+                                        if i + 2 < param_vec.len() {
+                                            if let Some(&subtype) = param_vec[i + 1].first() {
+                                                if subtype == 5 && i + 2 < param_vec.len() {
+                                                    // 256-color: ESC[48;5;nm
+                                                    if let Some(&color_idx) =
+                                                        param_vec[i + 2].first()
+                                                    {
+                                                        state.current_color.background =
+                                                            ansi_256_to_rgb(color_idx as u8);
+                                                        i += 2; // Skip the next 2 parameters
+                                                    }
+                                                } else if subtype == 2 && i + 4 < param_vec.len() {
+                                                    // RGB: ESC[48;2;r;g;bm
+                                                    if let (Some(&r), Some(&g), Some(&b)) = (
+                                                        param_vec[i + 2].first(),
+                                                        param_vec[i + 3].first(),
+                                                        param_vec[i + 4].first(),
+                                                    ) {
+                                                        state.current_color.background =
+                                                            egui::Color32::from_rgb(
+                                                                r as u8, g as u8, b as u8,
+                                                            );
+                                                        i += 4; // Skip the next 4 parameters
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        // Unknown SGR code - ignore
+                                    }
+                                }
+                            }
+                            i += 1;
+                        }
+                    }
+                    state_changed = true; // Colors changed
+                }
+                'h' | 'l' => {
+                    // Set Mode (h) / Reset Mode (l) - often used for terminal features
+                    let is_private_mode = intermediates.contains(&b'?');
+
+                    if let Some(first_param) = params.iter().next() {
+                        let mode = first_param[0];
+
+                        if is_private_mode {
+                            // Private mode sequences (ESC[?...h/l)
+                            match mode {
+                                1 => {
+                                    // Application cursor keys mode - silently ignore
+                                }
+                                25 => {
+                                    // Cursor visibility mode
+                                    if c == 'h' {
+                                        state.cursor_visible = true;
+                                    } else {
+                                        state.cursor_visible = false;
+                                    }
+                                    state_changed = true;
+                                }
+                                1049 => {
+                                    // Alternative screen buffer
+                                    if c == 'h' {
+                                        // ESC[?1049h - Switch to alternative screen buffer
+                                        state.switch_to_alt_screen();
+                                    } else {
+                                        // ESC[?1049l - Switch back to main screen buffer
+                                        state.switch_to_main_screen();
+                                    }
+                                    state_changed = true;
+                                }
+                                _ => {
+                                    // Silently ignore other private modes
+                                }
+                            }
+                        } else {
+                            // Standard mode sequences (ESC[...h/l)
+                            match mode {
+                                2004 => {
+                                    // Bracketed paste mode - silently ignore
+                                }
+                                _ => {
+                                    // Silently ignore other standard modes
+                                }
+                            }
+                        }
+                    }
+                }
+                'd' => {
+                    // VPA (Vertical Position Absolute)
+                    let row = params.iter().next().unwrap_or(&[1])[0].saturating_sub(1) as usize;
+                    state.cursor_row = row.min(state.rows - 1);
+                    state_changed = true;
+                }
+                'G' => {
+                    // CHA (Cursor Horizontal Absolute)
+                    let col = params.iter().next().unwrap_or(&[1])[0].saturating_sub(1) as usize;
+                    state.cursor_col = col.min(cols - 1);
+                    state_changed = true;
+                }
+                't' => {
+                    // Window manipulation sequences - ignore
+                }
+                'n' => {
+                    // Device Status Report - ignore
+                }
+                'c' => {
+                    // Device Attributes - ignore
+                }
+                'r' => {
+                    // Set scrolling region - ignore for now
+                }
+                'S' => {
+                    // Scroll up - ignore for now
+                }
+                'T' => {
+                    // Scroll down - ignore for now
+                }
+                'X' => {
+                    // ECH (Erase Character) - Erase N characters from cursor position
+                    let count = params.iter().next().unwrap_or(&[1])[0] as usize;
+                    let current_row = state.cursor_row;
+                    let current_col = state.cursor_col;
+                    if current_row < state.screen.len() {
+                        for i in 0..count {
+                            if current_col + i < state.cols {
+                                state.screen[current_row][current_col + i] =
+                                    TerminalCell::default();
+                            }
+                        }
+                    }
+                    state_changed = true;
+                }
+                'P' => {
+                    // DCH (Delete Character) - COMPLETELY BLOCKED
+                }
+                '@' => {
+                    // ICH (Insert Character) - ignore for now
+                }
+                'L' => {
+                    // Insert line - ignore for now
+                }
+                'M' => {
+                    // Delete line - ignore for now
+                }
+                's' => {
+                    // Save cursor position (ANSI.SYS compatible)
+                    println!(
+                        "💾 CSI s: Saving cursor ({}, {})",
+                        state.cursor_row, state.cursor_col
+                    );
+                    if state.is_alt_screen {
+                        state.saved_cursor_alt = (state.cursor_row, state.cursor_col);
+                    } else {
+                        state.saved_cursor_main = (state.cursor_row, state.cursor_col);
+                    }
+                    state_changed = true;
+                }
+                'u' => {
+                    // Restore cursor position (ANSI.SYS compatible)
+                    let (row, col) = if state.is_alt_screen {
+                        state.saved_cursor_alt
+                    } else {
+                        state.saved_cursor_main
+                    };
+                    println!("🔄 CSI u: Restoring cursor to ({}, {})", row, col);
+                    state.move_cursor_to(row, col);
+                    state_changed = true;
+                }
+                _ => {
+                    // Silently ignore unknown CSI sequences
+                    // This helps with compatibility with complex prompts
+                }
+            }
+
+            // Signal repaint if state changed
+            if state_changed {
+                self.egui_ctx.request_repaint();
+            }
+        }
+    }
+
+    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
+        if let Ok(mut state) = self.state.lock() {
+            let mut state_changed = false;
+            match byte {
+                b'7' => {
+                    // Save Cursor (DECSC)
+                    if state.is_alt_screen {
+                        state.saved_cursor_alt = (state.cursor_row, state.cursor_col);
+                    } else {
+                        state.saved_cursor_main = (state.cursor_row, state.cursor_col);
+                    }
+                    state_changed = true;
+                }
+                b'8' => {
+                    // Restore Cursor (DECRC)
+                    let (row, col) = if state.is_alt_screen {
+                        state.saved_cursor_alt
+                    } else {
+                        state.saved_cursor_main
+                    };
+                    state.move_cursor_to(row, col);
+                    state_changed = true;
+                }
+                _ => {}
+            }
+
+            if state_changed {
+                self.egui_ctx.request_repaint();
+            }
+        }
+    }
+}
