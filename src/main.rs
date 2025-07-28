@@ -2,14 +2,16 @@
 use anyhow::Result;
 use eframe::egui;
 use portable_pty::{CommandBuilder, PtySize};
+use std::collections::VecDeque;
 
-use std::io::{self, Write};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Parser, Perform};
+
+const MAX_SCROLLBACK: usize = 1000;
 
 // ANSI 색상 정보를 저장하는 구조체
 #[derive(Clone, Debug, PartialEq)]
@@ -305,7 +307,8 @@ impl KoreanInputState {
 // Terminal state structure
 #[derive(Clone)]
 struct TerminalState {
-    buffer: Vec<Vec<TerminalCell>>,
+    screen: Vec<Vec<TerminalCell>>,
+    scrollback: VecDeque<Vec<TerminalCell>>,
     cursor_row: usize,
     cursor_col: usize,
     rows: usize,
@@ -315,8 +318,9 @@ struct TerminalState {
     arrow_key_pressed: bool, // Track if arrow key was recently pressed
     arrow_key_time: Option<Instant>, // When arrow key was last pressed
     // Alternative screen buffer support
-    main_buffer: Vec<Vec<TerminalCell>>, // Main screen buffer
-    alt_buffer: Vec<Vec<TerminalCell>>,  // Alternative screen buffer
+    main_screen: Vec<Vec<TerminalCell>>, // Main screen buffer
+    main_scrollback: VecDeque<Vec<TerminalCell>>, // Saved scrollback for main screen
+    alt_screen: Vec<Vec<TerminalCell>>,  // Alternative screen buffer
     is_alt_screen: bool,                 // Currently using alternative screen
     saved_cursor_main: (usize, usize),   // Saved cursor position for main screen
     saved_cursor_alt: (usize, usize),    // Saved cursor position for alt screen
@@ -325,11 +329,12 @@ struct TerminalState {
 
 impl TerminalState {
     fn new(rows: usize, cols: usize) -> Self {
-        let buffer = vec![vec![TerminalCell::default(); cols]; rows];
-        let main_buffer = vec![vec![TerminalCell::default(); cols]; rows];
-        let alt_buffer = vec![vec![TerminalCell::default(); cols]; rows];
+        let screen = vec![vec![TerminalCell::default(); cols]; rows];
+        let main_screen = vec![vec![TerminalCell::default(); cols]; rows];
+        let alt_screen = vec![vec![TerminalCell::default(); cols]; rows];
         Self {
-            buffer: buffer.clone(),
+            screen,
+            scrollback: VecDeque::with_capacity(MAX_SCROLLBACK),
             cursor_row: 0,
             cursor_col: 0,
             rows,
@@ -337,8 +342,9 @@ impl TerminalState {
             current_color: AnsiColor::default(),
             arrow_key_pressed: false,
             arrow_key_time: None,
-            main_buffer,
-            alt_buffer,
+            main_screen,
+            main_scrollback: VecDeque::new(),
+            alt_screen,
             is_alt_screen: false,
             saved_cursor_main: (0, 0),
             saved_cursor_alt: (0, 0),
@@ -347,8 +353,17 @@ impl TerminalState {
     }
 
     fn clear_screen(&mut self) {
+        // Move all non-empty lines from the screen to the scrollback buffer, regardless of screen mode
+        for row in self.screen.iter().filter(|r| r.iter().any(|c| c.ch != ' ')) {
+            self.scrollback.push_back(row.clone());
+        }
+        // Trim scrollback if it exceeds the maximum size
+        while self.scrollback.len() > MAX_SCROLLBACK {
+            self.scrollback.pop_front();
+        }
+
         // Clear all content and reset cursor to top-left
-        for row in &mut self.buffer {
+        for row in &mut self.screen {
             for cell in row {
                 *cell = TerminalCell::default();
             }
@@ -365,29 +380,29 @@ impl TerminalState {
         let old_rows = self.rows;
         let old_cols = self.cols;
 
-        // 1. Resize main_buffer, preserving scrollback from the bottom
-        let mut new_main_buffer = vec![vec![TerminalCell::default(); new_cols]; new_rows];
+        // 1. Resize main_screen, preserving content from the bottom
+        let mut new_main_screen = vec![vec![TerminalCell::default(); new_cols]; new_rows];
         let rows_to_copy = std::cmp::min(new_rows, old_rows);
         let cols_to_copy = std::cmp::min(new_cols, old_cols);
-        let old_buffer_scrollback_start = old_rows.saturating_sub(rows_to_copy);
-        let new_buffer_scrollback_start = new_rows.saturating_sub(rows_to_copy);
+        let old_screen_start = old_rows.saturating_sub(rows_to_copy);
+        let new_screen_start = new_rows.saturating_sub(rows_to_copy);
 
         for r in 0..rows_to_copy {
             for c in 0..cols_to_copy {
-                new_main_buffer[new_buffer_scrollback_start + r][c] =
-                    self.main_buffer[old_buffer_scrollback_start + r][c].clone();
+                new_main_screen[new_screen_start + r][c] =
+                    self.main_screen[old_screen_start + r][c].clone();
             }
         }
-        self.main_buffer = new_main_buffer;
+        self.main_screen = new_main_screen;
 
-        // 2. Recreate alt_buffer (no need to preserve content)
-        self.alt_buffer = vec![vec![TerminalCell::default(); new_cols]; new_rows];
+        // 2. Recreate alt_screen (no need to preserve content)
+        self.alt_screen = vec![vec![TerminalCell::default(); new_cols]; new_rows];
 
-        // 3. Update the active buffer based on the current screen mode
+        // 3. Update the active screen based on the current screen mode
         if self.is_alt_screen {
-            self.buffer = self.alt_buffer.clone();
+            self.screen = self.alt_screen.clone();
         } else {
-            self.buffer = self.main_buffer.clone();
+            self.screen = self.main_screen.clone();
         }
 
         // 4. Update dimensions
@@ -428,14 +443,14 @@ impl TerminalState {
 
         if self.cursor_row < self.rows && self.cursor_col < self.cols {
             // Place the character with current color
-            self.buffer[self.cursor_row][self.cursor_col] = TerminalCell {
+            self.screen[self.cursor_row][self.cursor_col] = TerminalCell {
                 ch,
                 color: self.current_color.clone(),
             };
 
             // For wide characters (width 2), mark the second cell as a continuation
             if char_width == 2 && self.cursor_col + 1 < self.cols {
-                self.buffer[self.cursor_row][self.cursor_col + 1] = TerminalCell {
+                self.screen[self.cursor_row][self.cursor_col + 1] = TerminalCell {
                     ch: '\u{0000}', // Null char as continuation marker
                     color: self.current_color.clone(),
                 };
@@ -458,9 +473,13 @@ impl TerminalState {
         self.cursor_row += 1;
         self.cursor_col = 0;
         if self.cursor_row >= self.rows {
-            // Scroll up
-            self.buffer.remove(0);
-            self.buffer.push(vec![TerminalCell::default(); self.cols]);
+            // Scroll up: move the top line of the screen to the scrollback buffer
+            self.scrollback.push_back(self.screen.remove(0));
+            if self.scrollback.len() > MAX_SCROLLBACK {
+                self.scrollback.pop_front();
+            }
+
+            self.screen.push(vec![TerminalCell::default(); self.cols]);
             self.cursor_row = self.rows - 1;
         }
     }
@@ -473,8 +492,8 @@ impl TerminalState {
         if self.cursor_col > 0 {
             // Find prompt end to prevent deleting into prompt area
             let mut prompt_end = 0;
-            if self.cursor_row < self.buffer.len() {
-                let row = &self.buffer[self.cursor_row];
+            if self.cursor_row < self.screen.len() {
+                let row = &self.screen[self.cursor_row];
                 // Find prompt end: "~ " or "✗ " pattern
                 for i in 0..row.len().saturating_sub(1) {
                     if (row[i].ch == '~' || row[i].ch == '✗') && row[i + 1].ch == ' ' {
@@ -490,20 +509,20 @@ impl TerminalState {
                 let mut delete_col = self.cursor_col - 1;
 
                 // If we're on a continuation marker (\u{0000}), move back to the actual character
-                while delete_col > 0 && self.buffer[self.cursor_row][delete_col].ch == '\u{0000}' {
+                while delete_col > 0 && self.screen[self.cursor_row][delete_col].ch == '\u{0000}' {
                     delete_col -= 1;
                 }
 
                 // Double-check we're still in user input area after finding the actual character
                 if delete_col >= prompt_end {
                     // Get the character we're about to delete
-                    let ch_to_delete = self.buffer[self.cursor_row][delete_col].ch;
+                    let ch_to_delete = self.screen[self.cursor_row][delete_col].ch;
                     let char_width = ch_to_delete.width().unwrap_or(1);
 
                     // Clear the character and any continuation markers
                     for i in 0..char_width {
                         if delete_col + i < self.cols {
-                            self.buffer[self.cursor_row][delete_col + i] = TerminalCell::default();
+                            self.screen[self.cursor_row][delete_col + i] = TerminalCell::default();
                         }
                     }
 
@@ -549,12 +568,14 @@ impl TerminalState {
     fn switch_to_alt_screen(&mut self) {
         if !self.is_alt_screen {
             // Save current main screen state
-            self.main_buffer = self.buffer.clone();
+            self.main_screen = self.screen.clone();
+            self.main_scrollback = self.scrollback.clone();
             self.saved_cursor_main = (self.cursor_row, self.cursor_col);
 
             // Switch to alternative screen (start with clean screen)
             // Create a completely clean alt screen buffer
-            self.buffer = vec![vec![TerminalCell::default(); self.cols]; self.rows];
+            self.screen = self.alt_screen.clone();
+            self.scrollback.clear(); // Alt screen has no scrollback
             self.cursor_row = 0;
             self.cursor_col = 0;
             self.is_alt_screen = true;
@@ -568,7 +589,8 @@ impl TerminalState {
         if self.is_alt_screen {
             // Don't save alt screen state - each app gets a clean alt screen
             // Just restore main screen
-            self.buffer = self.main_buffer.clone();
+            self.screen = self.main_screen.clone();
+            self.scrollback = self.main_scrollback.clone();
             self.cursor_row = self.saved_cursor_main.0;
             self.cursor_col = self.saved_cursor_main.1;
             self.is_alt_screen = false;
@@ -594,7 +616,8 @@ impl Perform for TerminalPerformer {
     fn print(&mut self, c: char) {
         if let Ok(mut state) = self.state.lock() {
             // Smart filtering for consecutive spaces to prevent excessive line spacing from oh-my-zsh.
-            // This is re-enabled to fix line spacing issues, with logic to protect command output.
+            // This logic is now disabled as it was interfering with command output formatting like `ls`.
+            /*
             if c == ' ' {
                 let current_col = state.cursor_col;
 
@@ -602,8 +625,8 @@ impl Perform for TerminalPerformer {
                 // This avoids filtering spaces in the middle of command outputs (like `ls -l`).
                 if current_col < 30 {
                     let mut consecutive_spaces = 0;
-                    if state.cursor_row < state.buffer.len() {
-                        let row = &state.buffer[state.cursor_row];
+                    if state.cursor_row < state.screen.len() {
+                        let row = &state.screen[state.cursor_row];
                         // Count spaces backwards from cursor position
                         for i in (0..current_col.min(row.len())).rev() {
                             if row[i].ch == ' ' {
@@ -620,6 +643,7 @@ impl Perform for TerminalPerformer {
                     }
                 }
             }
+            */
 
             state.put_char(c);
             self.egui_ctx.request_repaint();
@@ -632,13 +656,13 @@ impl Perform for TerminalPerformer {
 
             match byte {
                 b'\n' => {
-                    println!("🖥️ DEBUG: VTE execute \\n (newline)");
+                    //println!("🖥️ DEBUG: VTE execute \\n (newline)");
                     state.newline();
                     state_changed = true;
                 }
                 b'\r' => {
                     // Process carriage return but don't trigger newline
-                    println!("🖥️ DEBUG: VTE execute \\r (carriage return only)");
+                    //println!("🖥️ DEBUG: VTE execute \\r (carriage return only)");
                     state.carriage_return();
                     state_changed = true;
                 }
@@ -719,8 +743,8 @@ impl Perform for TerminalPerformer {
                                     0
                                 };
                                 for col in start_col..state.cols {
-                                    if row < state.buffer.len() && col < state.buffer[row].len() {
-                                        state.buffer[row][col] = TerminalCell::default();
+                                    if row < state.screen.len() && col < state.screen[row].len() {
+                                        state.screen[row][col] = TerminalCell::default();
                                     }
                                 }
                             }
@@ -735,8 +759,8 @@ impl Perform for TerminalPerformer {
                                     state.cols
                                 };
                                 for col in 0..end_col {
-                                    if row < state.buffer.len() && col < state.buffer[row].len() {
-                                        state.buffer[row][col] = TerminalCell::default();
+                                    if row < state.screen.len() && col < state.screen[row].len() {
+                                        state.screen[row][col] = TerminalCell::default();
                                     }
                                 }
                             }
@@ -744,11 +768,13 @@ impl Perform for TerminalPerformer {
                         }
                         2 => {
                             // Clear entire display
+                            state.scrollback.clear();
                             state.clear_screen();
                             state_changed = true;
                         }
                         3 => {
                             // Clear display and scrollback (same as clear screen for us)
+                            state.scrollback.clear();
                             state.clear_screen();
                             state_changed = true;
                         }
@@ -767,10 +793,10 @@ impl Perform for TerminalPerformer {
                     match param {
                         0 => {
                             // Clear from cursor to end of line
-                            if current_row < state.buffer.len() {
+                            if current_row < state.screen.len() {
                                 for col in current_col..cols {
-                                    if col < state.buffer[current_row].len() {
-                                        state.buffer[current_row][col] = TerminalCell::default();
+                                    if col < state.screen[current_row].len() {
+                                        state.screen[current_row][col] = TerminalCell::default();
                                     }
                                 }
                             }
@@ -778,10 +804,10 @@ impl Perform for TerminalPerformer {
                         }
                         1 => {
                             // Clear from start of line to cursor
-                            if current_row < state.buffer.len() {
+                            if current_row < state.screen.len() {
                                 for col in 0..=current_col {
-                                    if col < state.buffer[current_row].len() {
-                                        state.buffer[current_row][col] = TerminalCell::default();
+                                    if col < state.screen[current_row].len() {
+                                        state.screen[current_row][col] = TerminalCell::default();
                                     }
                                 }
                             }
@@ -789,10 +815,10 @@ impl Perform for TerminalPerformer {
                         }
                         2 => {
                             // Clear entire line
-                            if current_row < state.buffer.len() {
+                            if current_row < state.screen.len() {
                                 for col in 0..cols {
-                                    if col < state.buffer[current_row].len() {
-                                        state.buffer[current_row][col] = TerminalCell::default();
+                                    if col < state.screen[current_row].len() {
+                                        state.screen[current_row][col] = TerminalCell::default();
                                     }
                                 }
                             }
@@ -1052,10 +1078,10 @@ impl Perform for TerminalPerformer {
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
                     let current_row = state.cursor_row;
                     let current_col = state.cursor_col;
-                    if current_row < state.buffer.len() {
+                    if current_row < state.screen.len() {
                         for i in 0..count {
                             if current_col + i < state.cols {
-                                state.buffer[current_row][current_col + i] =
+                                state.screen[current_row][current_col + i] =
                                     TerminalCell::default();
                             }
                         }
@@ -1268,11 +1294,11 @@ impl TerminalApp {
 
     // Helper function to send text to PTY
     fn send_to_pty(&mut self, text: &str) {
-        println!(
-            "📤 DEBUG: Sending to PTY: {:?} (bytes: {:?})",
-            text,
-            text.as_bytes()
-        );
+        // println!(
+        //     "📤 DEBUG: Sending to PTY: {:?} (bytes: {:?})",
+        //     text,
+        //     text.as_bytes()
+        // );
         if let Ok(mut writer) = self.pty_writer.lock() {
             let _ = writer.write_all(text.as_bytes());
             let _ = writer.flush();
@@ -1357,6 +1383,15 @@ impl TerminalApp {
         cmd.env("LC_CTYPE", "UTF-8");
         cmd.env("SHELL", "/bin/zsh");
         cmd.env("COLORTERM", "truecolor");
+
+        // Ensure consistent terminal behavior and fix visual glitches
+        //cmd.env("TERM_PROGRAM", "wterm");
+        //cmd.env("TERM_PROGRAM_VERSION", "1.0");
+        // Disable the reverse-video '%' character at the end of partial lines
+        //cmd.env("PROMPT_EOL_MARK", "");
+        // Prevent oh-my-zsh from trying to set the window title
+        //cmd.env("DISABLE_AUTO_TITLE", "true");
+
         let _child = pty_pair.slave.spawn_command(cmd)?;
 
         let mut pty_reader = pty_pair.master.try_clone_reader()?;
@@ -1375,8 +1410,16 @@ impl TerminalApp {
                 match pty_reader.read(&mut buffer) {
                     Ok(0) => break, // EOF
                     Ok(n) => {
+                        let read_data = &buffer[..n];
+                        /*
+                        println!(
+                            "🚽 PTY Read ({} bytes): string: \"{}\"",
+                            n,
+                            String::from_utf8_lossy(read_data).escape_debug()
+                        );
+                        */
                         // Process all bytes at once using VTE 0.15 API
-                        parser.advance(&mut performer, &buffer[..n]);
+                        parser.advance(&mut performer, read_data);
                     }
                     Err(_) => break,
                 }
@@ -1473,7 +1516,7 @@ impl TerminalApp {
                 pixel_width,
                 pixel_height,
             };
-            println!("🖥️ Resizing PTY to: {:?}", new_size);
+            //println!("🖥️ Resizing PTY to: {:?}", new_size);
             pty_master
                 .resize(new_size)
                 .map_err(|e| anyhow::anyhow!("PTY resize failed: {}", e))?;
@@ -1520,19 +1563,22 @@ impl eframe::App for TerminalApp {
 
                     // Calculate terminal content size
                     if let Ok(state) = self.terminal_state.lock() {
-                        let content_height = state.rows as f32 * line_height;
+                        let total_lines = state.scrollback.len() + state.screen.len();
+                        let content_height = total_lines as f32 * line_height;
                         let content_width = state.cols as f32 * char_width;
 
-                        // Allocate exact space needed for terminal content with keyboard focus
+                        // Allocate exact space needed for the *entire* virtual terminal content
+                        // This makes the scrollbar behave correctly.
                         let (response, painter) = ui.allocate_painter(
                             egui::Vec2::new(content_width, content_height),
                             egui::Sense::click_and_drag()
                                 .union(egui::Sense::focusable_noninteractive()),
                         );
 
-                        // Draw terminal background (macOS Terminal style black background)
+                        // Draw terminal background ONLY for the visible part of the terminal.
+                        // This is a major performance optimization.
                         painter.rect_filled(
-                            response.rect,
+                            ui.clip_rect(),
                             egui::CornerRadius::ZERO,
                             egui::Color32::BLACK,
                         );
@@ -1555,10 +1601,25 @@ impl eframe::App for TerminalApp {
 
                         // If focused, we will handle keyboard input in the event loop
 
-                        // Terminal rendering without debug output
+                        // --- Row Virtualization ---
+                        // Calculate which rows are visible within the clip_rect.
+                        let first_visible_row = ((ui.clip_rect().top() - response.rect.top())
+                            / line_height)
+                            .floor()
+                            .max(0.0) as usize;
 
-                        // First, draw all terminal content (characters and backgrounds)
-                        for (row_idx, row) in state.buffer.iter().enumerate() {
+                        // Combine scrollback and screen for rendering
+                        let full_buffer: Vec<_> =
+                            state.scrollback.iter().chain(state.screen.iter()).collect();
+
+                        let last_visible_row = ((ui.clip_rect().bottom() - response.rect.top())
+                            / line_height)
+                            .ceil() as usize;
+                        let last_visible_row = last_visible_row.min(full_buffer.len());
+
+                        // First, draw only the *visible* terminal content
+                        for row_idx in first_visible_row..last_visible_row {
+                            let row = &full_buffer[row_idx];
                             let y = response.rect.top() + row_idx as f32 * line_height;
                             let mut col_offset = 0.0;
 
@@ -1650,109 +1711,119 @@ impl eframe::App for TerminalApp {
                         }
 
                         // Now draw cursor separately at correct position
-                        let cursor_y = response.rect.top() + state.cursor_row as f32 * line_height;
+                        let cursor_screen_y = state.cursor_row as f32 * line_height;
+                        let cursor_y = response.rect.top()
+                            + (state.scrollback.len() as f32 * line_height)
+                            + cursor_screen_y;
 
-                        // Calculate precise cursor X position by walking through the row
-                        let mut cursor_x = response.rect.left();
-                        if state.cursor_row < state.buffer.len() {
-                            for (col_idx, cell) in state.buffer[state.cursor_row].iter().enumerate()
-                            {
-                                if col_idx >= state.cursor_col {
-                                    break;
+                        // Only draw the cursor if it's within the visible area
+                        if cursor_y >= ui.clip_rect().top()
+                            && cursor_y + line_height <= ui.clip_rect().bottom()
+                        {
+                            // Calculate precise cursor X position by walking through the row
+                            let mut cursor_x = response.rect.left();
+                            if state.cursor_row < state.screen.len() {
+                                for (col_idx, cell) in
+                                    state.screen[state.cursor_row].iter().enumerate()
+                                {
+                                    if col_idx >= state.cursor_col {
+                                        break;
+                                    }
+
+                                    // Skip continuation markers for wide characters
+                                    if cell.ch == '\u{0000}' {
+                                        continue;
+                                    }
+
+                                    // For monospace font, all characters should have same width except for wide chars
+                                    let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
+                                        2 // Keep wide characters (like Korean) as 2 units
+                                    } else {
+                                        1 // All other characters (including space) are 1 unit
+                                    };
+                                    cursor_x += char_display_width as f32 * char_width;
                                 }
-
-                                // Skip continuation markers for wide characters
-                                if cell.ch == '\u{0000}' {
-                                    continue;
-                                }
-
-                                // For monospace font, all characters should have same width except for wide chars
-                                let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
-                                    2 // Keep wide characters (like Korean) as 2 units
-                                } else {
-                                    1 // All other characters (including space) are 1 unit
-                                };
-                                cursor_x += char_display_width as f32 * char_width;
                             }
-                        }
 
-                        // Calculate cursor width for Korean composition if needed
-                        let cursor_width = if self.korean_state.is_composing {
-                            // Korean composing characters are always wide (2 chars)
-                            2.0 * char_width
-                        } else {
-                            // Normal cursor width
-                            char_width
-                        };
+                            // Calculate cursor width for Korean composition if needed
+                            let cursor_width = if self.korean_state.is_composing {
+                                // Korean composing characters are always wide (2 chars)
+                                2.0 * char_width
+                            } else {
+                                // Normal cursor width
+                                char_width
+                            };
 
-                        // Draw composing character preview if Korean composition is active
-                        if self.korean_state.is_composing {
-                            if let Some(composing_char) = self.korean_state.get_current_char() {
-                                // Draw composing character with a different color (gray/dimmed) to show it's temporary
-                                let preview_color = egui::Color32::from_rgb(150, 150, 150); // Gray preview color
+                            // Draw composing character preview if Korean composition is active
+                            if self.korean_state.is_composing {
+                                if let Some(composing_char) = self.korean_state.get_current_char() {
+                                    // Draw composing character with a different color (gray/dimmed) to show it's temporary
+                                    let preview_color = egui::Color32::from_rgb(150, 150, 150); // Gray preview color
 
-                                painter.text(
-                                    egui::Pos2::new(cursor_x, cursor_y),
-                                    egui::Align2::LEFT_TOP,
-                                    composing_char,
-                                    font_id.clone(),
-                                    preview_color,
-                                );
+                                    painter.text(
+                                        egui::Pos2::new(cursor_x, cursor_y),
+                                        egui::Align2::LEFT_TOP,
+                                        composing_char,
+                                        font_id.clone(),
+                                        preview_color,
+                                    );
 
-                                // Draw a subtle background to make the preview more visible
-                                let preview_bg =
-                                    egui::Color32::from_rgba_unmultiplied(100, 100, 100, 50);
+                                    // Draw a subtle background to make the preview more visible
+                                    let preview_bg =
+                                        egui::Color32::from_rgba_unmultiplied(100, 100, 100, 50);
+                                    painter.rect_filled(
+                                        egui::Rect::from_min_size(
+                                            egui::Pos2::new(cursor_x, cursor_y),
+                                            egui::Vec2::new(cursor_width, line_height),
+                                        ),
+                                        egui::CornerRadius::ZERO,
+                                        preview_bg,
+                                    );
+
+                                    // Redraw the composing character on top of background
+                                    painter.text(
+                                        egui::Pos2::new(cursor_x, cursor_y),
+                                        egui::Align2::LEFT_TOP,
+                                        composing_char,
+                                        font_id.clone(),
+                                        preview_color,
+                                    );
+                                }
+                            }
+
+                            // Underscore cursor style - doesn't cover text
+                            let cursor_color = egui::Color32::WHITE;
+
+                            // Only draw cursor if we're actually at a valid position and it's visible
+                            if state.cursor_visible
+                                && state.cursor_row < state.screen.len()
+                                && state.cursor_col < state.cols
+                            {
+                                // Draw underscore cursor at the bottom of the character cell
+                                let cursor_line_y = cursor_y + line_height - 2.0; // 2 pixels from bottom
+                                let cursor_line_thickness = 2.0;
+
                                 painter.rect_filled(
                                     egui::Rect::from_min_size(
-                                        egui::Pos2::new(cursor_x, cursor_y),
-                                        egui::Vec2::new(cursor_width, line_height),
+                                        egui::Pos2::new(cursor_x, cursor_line_y),
+                                        egui::Vec2::new(cursor_width, cursor_line_thickness),
                                     ),
                                     egui::CornerRadius::ZERO,
-                                    preview_bg,
-                                );
-
-                                // Redraw the composing character on top of background
-                                painter.text(
-                                    egui::Pos2::new(cursor_x, cursor_y),
-                                    egui::Align2::LEFT_TOP,
-                                    composing_char,
-                                    font_id.clone(),
-                                    preview_color,
+                                    cursor_color,
                                 );
                             }
-                        }
-
-                        // Underscore cursor style - doesn't cover text
-                        let cursor_color = egui::Color32::WHITE;
-
-                        // Only draw cursor if we're actually at a valid position and it's visible
-                        if state.cursor_visible
-                            && state.cursor_row < state.buffer.len()
-                            && state.cursor_col < state.cols
-                        {
-                            // Draw underscore cursor at the bottom of the character cell
-                            let cursor_line_y = cursor_y + line_height - 2.0; // 2 pixels from bottom
-                            let cursor_line_thickness = 2.0;
-
-                            painter.rect_filled(
-                                egui::Rect::from_min_size(
-                                    egui::Pos2::new(cursor_x, cursor_line_y),
-                                    egui::Vec2::new(cursor_width, cursor_line_thickness),
-                                ),
-                                egui::CornerRadius::ZERO,
-                                cursor_color,
-                            );
                         }
 
                         // Auto-scroll to cursor position only if cursor moved
                         let current_cursor_pos = (state.cursor_row, state.cursor_col);
                         if current_cursor_pos != self.last_cursor_pos {
-                            let cursor_y = state.cursor_row as f32 * line_height;
+                            let cursor_y_in_buffer =
+                                (state.scrollback.len() + state.cursor_row) as f32 * line_height;
                             let cursor_rect = egui::Rect::from_min_size(
-                                egui::Pos2::new(0.0, cursor_y),
+                                egui::Pos2::new(0.0, cursor_y_in_buffer),
                                 egui::Vec2::new(char_width, line_height),
                             );
-                            ui.scroll_to_rect(cursor_rect, Some(egui::Align::Center));
+                            ui.scroll_to_rect(cursor_rect, Some(egui::Align::Max));
                             self.last_cursor_pos = current_cursor_pos;
                         }
 
@@ -1889,7 +1960,7 @@ impl eframe::App for TerminalApp {
                                 // Handle keys that should finalize Korean composition
                                 match key {
                                     egui::Key::Enter => {
-                                        println!("🔑 DEBUG: Enter key pressed");
+                                        //println!("🔑 DEBUG: Enter key pressed");
                                         self.finalize_korean_composition();
                                         // Reset arrow key state when user presses Enter
                                         if let Ok(mut state) = self.terminal_state.lock() {
@@ -1957,8 +2028,8 @@ impl eframe::App for TerminalApp {
                                                 // Find the user input area (after prompt)
                                                 let mut prompt_end = 0;
                                                 let mut text_end = 0;
-                                                if state.cursor_row < state.buffer.len() {
-                                                    let row = &state.buffer[state.cursor_row];
+                                                if state.cursor_row < state.screen.len() {
+                                                    let row = &state.screen[state.cursor_row];
                                                     // Find prompt end: "~ " or "✗ " pattern
                                                     for i in 0..row.len().saturating_sub(1) {
                                                         if (row[i].ch == '~' || row[i].ch == '✗')
@@ -2001,8 +2072,8 @@ impl eframe::App for TerminalApp {
 
                                                 // Find prompt end to limit leftward movement
                                                 let mut prompt_end = 0;
-                                                if state.cursor_row < state.buffer.len() {
-                                                    let row = &state.buffer[state.cursor_row];
+                                                if state.cursor_row < state.screen.len() {
+                                                    let row = &state.screen[state.cursor_row];
                                                     // Find prompt end: "~ " or "✗ " pattern
                                                     for i in 0..row.len().saturating_sub(1) {
                                                         if (row[i].ch == '~' || row[i].ch == '✗')
@@ -2157,17 +2228,17 @@ impl eframe::App for TerminalApp {
                                 // Debug: Log what text events we receive
                                 for ch in text.chars() {
                                     if ch == '\t' {
-                                        println!("⚠️ Tab character received in Text event (already handled above)");
+                                        //println!("⚠️ Tab character received in Text event (already handled above)");
                                         return; // Don't process as regular text - already handled above
                                     } else if ch == '\n' || ch == '\r' {
-                                        println!("⚠️ Newline/Return character received in Text event (potential duplication!): U+{:04X}", ch as u32);
+                                        //println!("⚠️ Newline/Return character received in Text event (potential duplication!): U+{:04X}", ch as u32);
                                         return; // Don't process as regular text - already handled above
                                     } else if ch == ' ' {
-                                        println!("✅ Space character in Text event (expected)");
+                                        //println!("✅ Space character in Text event (expected)");
                                     } else if ch.is_ascii_graphic() {
-                                        println!("✅ Text event: '{}'", ch);
+                                        //println!("✅ Text event: '{}'", ch);
                                     } else {
-                                        println!("❓ Text event: U+{:04X}", ch as u32);
+                                        //println!("❓ Text event: U+{:04X}", ch as u32);
                                     }
                                 }
                                 // Use new IME-aware text processing

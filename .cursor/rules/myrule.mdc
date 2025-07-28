@@ -1,0 +1,7 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+
+- cmd.env 값은 수정하지 않는다.
