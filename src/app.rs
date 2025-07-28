@@ -218,20 +218,20 @@ impl TerminalApp {
         })?;
 
         // Spawn shell - use zsh with user configs (.zshrc, oh-my-zsh etc)
-        let mut cmd = CommandBuilder::new("zsh");
-        cmd.args(&["-l"]); // Login shell with user's .zshrc
+        let mut cmd = CommandBuilder::new("/bin/zsh");
+        cmd.args(&["-il"]); // Login shell with user's .zshrc
         cmd.env("TERM", "xterm-256color");
         cmd.env("LANG", "ko_KR.UTF-8");
         cmd.env("LC_ALL", "ko_KR.UTF-8");
         cmd.env("LC_CTYPE", "UTF-8");
         cmd.env("SHELL", "/bin/zsh");
-        cmd.env("COLORTERM", "truecolor");
-
+        //P1: '\\x1b]0;', P2: '\\x07'
+        //cmd.env("PROMPT_EOL_MARK", "");
         // Ensure consistent terminal behavior and fix visual glitches
         cmd.env("TERM_PROGRAM", "wterm");
         cmd.env("TERM_PROGRAM_VERSION", "1.0");
         // Disable the reverse-video '%' character at the end of partial lines
-        //cmd.env("PROMPT_EOL_MARK", "");
+
         // Prevent oh-my-zsh from trying to set the window title
         //cmd.env("DISABLE_AUTO_TITLE", "true");
 
@@ -254,13 +254,13 @@ impl TerminalApp {
                     Ok(0) => break, // EOF
                     Ok(n) => {
                         let read_data = &buffer[..n];
-                        /*
+
                         println!(
                             "🚽 PTY Read ({} bytes): string: \"{}\"",
                             n,
                             String::from_utf8_lossy(read_data).escape_debug()
                         );
-                        */
+
                         // Process all bytes at once using VTE 0.15 API
                         parser.advance(&mut performer, read_data);
                     }

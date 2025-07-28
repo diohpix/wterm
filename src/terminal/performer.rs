@@ -19,12 +19,8 @@ impl TerminalPerformer {
 impl Perform for TerminalPerformer {
     fn print(&mut self, c: char) {
         if let Ok(mut state) = self.state.lock() {
-            // Filter out space characters at the beginning of a line. This is a common
-            // artifact from oh-my-zsh's prompt rendering after a newline, which
-            // can cause an extra empty-looking line to appear between prompts.
-            if c == ' ' && state.cursor_col == 0 {
-                //return; // Skip printing this character.
-            }
+            // Don't filter leading spaces - let them through normally
+            // The PROMPT_EOL_MARK="" setting should handle the root cause
 
             state.put_char(c);
             self.egui_ctx.request_repaint();
@@ -45,7 +41,7 @@ impl Perform for TerminalPerformer {
                     // Process carriage return but don't trigger newline
                     println!("🖥️ DEBUG: VTE execute \\r (carriage return only)");
                     state.carriage_return();
-                    //   state_changed = true;
+                    state_changed = true;
                 }
                 b'\x08' => {
                     if !state.should_protect_from_arrow_key() {
@@ -94,7 +90,15 @@ impl Perform for TerminalPerformer {
         // No-op
     }
 
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        println!(
+            "🖥️ DEBUG: VTE osc_dispatch - bell_terminated: {}, params: {:?}",
+            bell_terminated,
+            params
+                .iter()
+                .map(|p| String::from_utf8_lossy(p))
+                .collect::<Vec<_>>()
+        );
         // No-op
     }
 
