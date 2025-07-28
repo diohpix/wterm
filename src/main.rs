@@ -615,35 +615,12 @@ impl TerminalPerformer {
 impl Perform for TerminalPerformer {
     fn print(&mut self, c: char) {
         if let Ok(mut state) = self.state.lock() {
-            // Smart filtering for consecutive spaces to prevent excessive line spacing from oh-my-zsh.
-            // This logic is now disabled as it was interfering with command output formatting like `ls`.
-            /*
-            if c == ' ' {
-                let current_col = state.cursor_col;
-
-                // Only apply filtering near the start of the line, where prompts are rendered.
-                // This avoids filtering spaces in the middle of command outputs (like `ls -l`).
-                if current_col < 30 {
-                    let mut consecutive_spaces = 0;
-                    if state.cursor_row < state.screen.len() {
-                        let row = &state.screen[state.cursor_row];
-                        // Count spaces backwards from cursor position
-                        for i in (0..current_col.min(row.len())).rev() {
-                            if row[i].ch == ' ' {
-                                consecutive_spaces += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-
-                    // Allow up to 10 consecutive spaces for prompt alignment, but filter out more.
-                    if consecutive_spaces >= 10 {
-                        return; // Filter/skip this space character
-                    }
-                }
+            // Filter out space characters at the beginning of a line. This is a common
+            // artifact from oh-my-zsh's prompt rendering after a newline, which
+            // can cause an extra empty-looking line to appear between prompts.
+            if c == ' ' && state.cursor_col == 0 {
+                return; // Skip printing this character.
             }
-            */
 
             state.put_char(c);
             self.egui_ctx.request_repaint();
@@ -1176,8 +1153,7 @@ pub struct TerminalApp {
     pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pty_master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     korean_state: KoreanInputState,
-    last_tab_time: Option<Instant>,  // Tab key debouncing
-    last_cursor_pos: (usize, usize), // Track cursor position for auto-scroll
+    last_tab_time: Option<Instant>, // Tab key debouncing
 }
 
 impl TerminalApp {
@@ -1385,12 +1361,12 @@ impl TerminalApp {
         cmd.env("COLORTERM", "truecolor");
 
         // Ensure consistent terminal behavior and fix visual glitches
-        //cmd.env("TERM_PROGRAM", "wterm");
-        //cmd.env("TERM_PROGRAM_VERSION", "1.0");
+        cmd.env("TERM_PROGRAM", "wterm");
+        cmd.env("TERM_PROGRAM_VERSION", "1.0");
         // Disable the reverse-video '%' character at the end of partial lines
-        //cmd.env("PROMPT_EOL_MARK", "");
+        cmd.env("PROMPT_EOL_MARK", "");
         // Prevent oh-my-zsh from trying to set the window title
-        //cmd.env("DISABLE_AUTO_TITLE", "true");
+        cmd.env("DISABLE_AUTO_TITLE", "true");
 
         let _child = pty_pair.slave.spawn_command(cmd)?;
 
@@ -1432,7 +1408,6 @@ impl TerminalApp {
             pty_master,
             korean_state: KoreanInputState::new(),
             last_tab_time: None,
-            last_cursor_pos: (0, 0),
         })
     }
 
@@ -1552,7 +1527,8 @@ impl eframe::App for TerminalApp {
 
             // Terminal display with focus handling and proper scrolling
             let terminal_response = egui::ScrollArea::vertical()
-                .id_salt("terminal_scroll")
+                .id_salt("terminal_scroll") // Use id_salt for persistent state (corrected from id_source)
+                .stick_to_bottom(true)
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     // Calculate exact font metrics
@@ -1562,7 +1538,7 @@ impl eframe::App for TerminalApp {
                     let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
 
                     // Calculate terminal content size
-                    if let Ok(state) = self.terminal_state.lock() {
+                    if let Ok(mut state) = self.terminal_state.lock() {
                         let total_lines = state.scrollback.len() + state.screen.len();
                         let content_height = total_lines as f32 * line_height;
                         let content_width = state.cols as f32 * char_width;
@@ -1814,18 +1790,8 @@ impl eframe::App for TerminalApp {
                             }
                         }
 
-                        // Auto-scroll to cursor position only if cursor moved
-                        let current_cursor_pos = (state.cursor_row, state.cursor_col);
-                        if current_cursor_pos != self.last_cursor_pos {
-                            let cursor_y_in_buffer =
-                                (state.scrollback.len() + state.cursor_row) as f32 * line_height;
-                            let cursor_rect = egui::Rect::from_min_size(
-                                egui::Pos2::new(0.0, cursor_y_in_buffer),
-                                egui::Vec2::new(char_width, line_height),
-                            );
-                            ui.scroll_to_rect(cursor_rect, Some(egui::Align::Max));
-                            self.last_cursor_pos = current_cursor_pos;
-                        }
+                        // Auto-scroll is now handled by `stick_to_bottom(true)` on the ScrollArea.
+                        // No manual scrolling logic is needed anymore.
 
                         response
                     } else {
