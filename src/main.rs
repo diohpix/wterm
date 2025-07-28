@@ -4,6 +4,7 @@ use eframe::egui;
 use portable_pty::{CommandBuilder, PtySize};
 
 use std::io::{self, Write};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -18,6 +19,7 @@ struct AnsiColor {
     bold: bool,
     italic: bool,
     underline: bool,
+    reverse: bool,
 }
 
 impl Default for AnsiColor {
@@ -28,6 +30,7 @@ impl Default for AnsiColor {
             bold: false,
             italic: false,
             underline: false,
+            reverse: false,
         }
     }
 }
@@ -321,6 +324,7 @@ struct TerminalState {
     is_alt_screen: bool,                 // Currently using alternative screen
     saved_cursor_main: (usize, usize),   // Saved cursor position for main screen
     saved_cursor_alt: (usize, usize),    // Saved cursor position for alt screen
+    cursor_visible: bool,                // Is the cursor currently visible?
 }
 
 impl TerminalState {
@@ -342,6 +346,7 @@ impl TerminalState {
             is_alt_screen: false,
             saved_cursor_main: (0, 0),
             saved_cursor_alt: (0, 0),
+            cursor_visible: true,
         }
     }
 
@@ -499,12 +504,7 @@ impl TerminalState {
 
                     // Move cursor to the position of the deleted character
                     self.cursor_col = delete_col;
-                    println!("🔄 Backspace: cursor {} -> {} (prompt_end: {})", self.cursor_col + char_width, self.cursor_col, prompt_end);
-                } else {
-                    println!("🚫 Backspace blocked: would delete prompt area (delete_col: {}, prompt_end: {})", delete_col, prompt_end);
                 }
-            } else {
-                println!("🚫 Backspace blocked: cursor at prompt area (cursor: {}, prompt_end: {})", self.cursor_col, prompt_end);
             }
         }
     }
@@ -578,31 +578,48 @@ impl TerminalState {
 // VTE Performer implementation
 struct TerminalPerformer {
     state: Arc<Mutex<TerminalState>>,
-    needs_repaint: Arc<Mutex<bool>>,
+    egui_ctx: egui::Context,
 }
 
 impl TerminalPerformer {
-    fn new(state: Arc<Mutex<TerminalState>>, needs_repaint: Arc<Mutex<bool>>) -> Self {
-        Self { state, needs_repaint }
+    fn new(state: Arc<Mutex<TerminalState>>, egui_ctx: egui::Context) -> Self {
+        Self { state, egui_ctx }
     }
 }
 
 impl Perform for TerminalPerformer {
     fn print(&mut self, c: char) {
         if let Ok(mut state) = self.state.lock() {
-            // Log character input to help debug
-            if c.is_ascii_graphic() || c == ' ' {
-                print!("'{}'", c);
-            } else {
-                print!("U+{:04X}", c as u32);
+            // Smart filtering for consecutive spaces to prevent excessive line spacing from oh-my-zsh.
+            // This is re-enabled to fix line spacing issues, with logic to protect command output.
+            if c == ' ' {
+                let current_col = state.cursor_col;
+                
+                // Only apply filtering near the start of the line, where prompts are rendered.
+                // This avoids filtering spaces in the middle of command outputs (like `ls -l`).
+                if current_col < 30 {
+                    let mut consecutive_spaces = 0;
+                    if state.cursor_row < state.buffer.len() {
+                        let row = &state.buffer[state.cursor_row];
+                        // Count spaces backwards from cursor position
+                        for i in (0..current_col.min(row.len())).rev() {
+                            if row[i].ch == ' ' {
+                                consecutive_spaces += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Allow up to 10 consecutive spaces for prompt alignment, but filter out more.
+                    if consecutive_spaces >= 10 {
+                        return; // Filter/skip this space character
+                    }
+                }
             }
-            io::stdout().flush().unwrap_or(());
+
             state.put_char(c);
-            
-            // Signal that repaint is needed
-            if let Ok(mut needs_repaint) = self.needs_repaint.lock() {
-                *needs_repaint = true;
-            }
+            self.egui_ctx.request_repaint();
         }
     }
 
@@ -612,125 +629,69 @@ impl Perform for TerminalPerformer {
             
             match byte {
                 b'\n' => {
-                    println!("📄 Newline");
                     state.newline();
                     state_changed = true;
                 }
                 b'\r' => {
-                    println!("🔄 Carriage return");
                     state.carriage_return();
                     state_changed = true;
                 }
                 b'\x08' => {
-                    // Backspace (Ctrl+H) - block if arrow key was recently pressed or would enter prompt
-                    if state.should_protect_from_arrow_key() {
-                        println!("🚫 Backspace \\x08 (blocked - arrow key protection active)");
-                    } else {
-                        println!("⬅️ Backspace \\x08 (processing with prompt protection)");
-                        state.backspace(); // Now has prompt protection built-in
+                    if !state.should_protect_from_arrow_key() {
+                        state.backspace();
                         state_changed = true;
                     }
                 }
                 b'\x09' => {
-                    // Tab character - move cursor to next tab stop (every 8 columns)
-                    println!("🔄 Tab character received from PTY");
                     let next_tab_stop = ((state.cursor_col / 8) + 1) * 8;
                     if next_tab_stop < state.cols {
                         state.cursor_col = next_tab_stop;
-                        println!("🔄 Tab: cursor moved to column {}", state.cursor_col);
-                        state_changed = true;
                     } else {
-                        // If tab would go beyond line, go to end of line
                         state.cursor_col = state.cols - 1;
-                        println!("🔄 Tab: cursor moved to end of line ({})", state.cursor_col);
-                        state_changed = true;
                     }
+                    state_changed = true;
                 }
                 b'\x0c' => {
-                    // Form Feed (Ctrl+L) - allow screen clear but clear protection first
                     state.clear_arrow_key_protection();
                     state.clear_screen();
-                    println!("🧹 Form Feed - screen cleared");
                     state_changed = true;
                 }
                 b'\x7f' => {
-                    // DEL character - block if arrow key was recently pressed or would enter prompt
-                    if state.should_protect_from_arrow_key() {
-                        println!("🚫 DEL \\x7f (blocked - arrow key protection active)");
-                    } else {
-                        println!("🗑️ DEL \\x7f (processing with prompt protection)");
-                        state.backspace(); // Now has prompt protection built-in
+                    if !state.should_protect_from_arrow_key() {
+                        state.backspace();
                         state_changed = true;
                     }
                 }
-                _ => {
-                    // Log other control characters for debugging
-                    if byte < 32 {
-                        println!("❓ Control char: 0x{:02x}", byte);
-                    }
-                }
+                _ => {}
             }
             
-            // Signal repaint if state changed
             if state_changed {
-                if let Ok(mut needs_repaint) = self.needs_repaint.lock() {
-                    *needs_repaint = true;
-                }
+                self.egui_ctx.request_repaint();
             }
         }
     }
 
-    fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, c: char) {
-        println!(
-            "🪝 HOOK: '{}' params:{:?} intermediates:{:?} ignore:{}",
-            c,
-            params
-                .iter()
-                .map(|p| p.first().copied().unwrap_or(0))
-                .collect::<Vec<_>>(),
-            intermediates,
-            ignore
-        );
+    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _c: char) {
+        // No-op
     }
 
-    fn put(&mut self, byte: u8) {
-        println!(
-            "📋 PUT: 0x{:02x} ('{}')",
-            byte,
-            if byte.is_ascii_graphic() {
-                byte as char
-            } else {
-                '?'
-            }
-        );
+    fn put(&mut self, _byte: u8) {
+        // No-op
     }
 
     fn unhook(&mut self) {
-        println!("🔓 UNHOOK");
+        // No-op
     }
 
-    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
-        println!("🎯 OSC: params:{:?} bell:{}", params, bell_terminated);
+    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
+        // No-op
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
         if let Ok(mut state) = self.state.lock() {
             let mut state_changed = false;
-            
-            // Debug: Print CSI commands to understand what's happening
-            let param_values: Vec<u16> = params
-                .iter()
-                .map(|p| p.first().copied().unwrap_or(0))
-                .collect();
-            println!(
-                "CSI: '{}' params:{:?} arrow_pressed:{}",
-                c, param_values, state.arrow_key_pressed
-            );
 
-            // Copy values we need before the match to avoid borrowing issues
             let cols = state.cols;
-            let rows = state.rows;
-
             match c {
                 'H' | 'f' => {
                     // CUP (Cursor Position) or HVP (Horizontal and Vertical Position)
@@ -740,51 +701,91 @@ impl Perform for TerminalPerformer {
                     state_changed = true;
                 }
                 'J' => {
-                    // ED (Erase in Display) - COMPLETELY BLOCK ALL to prevent text deletion
+                    // ED (Erase in Display) - Allow normally for proper terminal function
                     let param = params.iter().next().unwrap_or(&[0])[0];
                     match param {
                         0 => {
-                            // ALWAYS BLOCK - this is the main culprit
-                            println!("🚫 BLOCKED: ED 0 (clear to end of display)");
+                            // Clear from cursor to end of display
+                            for row in state.cursor_row..state.rows {
+                                let start_col = if row == state.cursor_row { state.cursor_col } else { 0 };
+                                for col in start_col..state.cols {
+                                    if row < state.buffer.len() && col < state.buffer[row].len() {
+                                        state.buffer[row][col] = TerminalCell::default();
+                                    }
+                                }
+                            }
+                            state_changed = true;
                         }
                         1 => {
-                            // ALWAYS BLOCK
-                            println!("🚫 BLOCKED: ED 1 (clear from start to cursor)");
+                            // Clear from start of display to cursor
+                            for row in 0..=state.cursor_row {
+                                let end_col = if row == state.cursor_row { state.cursor_col } else { state.cols };
+                                for col in 0..end_col {
+                                    if row < state.buffer.len() && col < state.buffer[row].len() {
+                                        state.buffer[row][col] = TerminalCell::default();
+                                    }
+                                }
+                            }
+                            state_changed = true;
                         }
                         2 => {
-                            // Only allow if explicitly requested (very rare case)
-                            // Block this too for now to be safe
-                            println!("🚫 BLOCKED: ED 2 (clear screen - completely blocked)");
+                            // Clear entire display
+                            state.clear_screen();
+                            state_changed = true;
                         }
                         3 => {
-                            // Block this too
-                            println!(
-                                "🚫 BLOCKED: ED 3 (clear screen + scrollback - completely blocked)"
-                            );
+                            // Clear display and scrollback (same as clear screen for us)
+                            state.clear_screen();
+                            state_changed = true;
                         }
                         _ => {
-                            println!("🚫 BLOCKED: ED {} (unknown erase display)", param);
+                            // Unknown parameter, ignore
                         }
                     }
                 }
                 'K' => {
-                    // EL (Erase in Line) - COMPLETELY BLOCK ALL to prevent text deletion
+                    // EL (Erase in Line) - Allow normally for proper terminal function
                     let param = params.iter().next().unwrap_or(&[0])[0];
+                    let current_row = state.cursor_row;
+                    let current_col = state.cursor_col;
+                    let cols = state.cols;
+                    
                     match param {
                         0 => {
-                            // ALWAYS BLOCK - this is the main cause of text disappearing
-                            println!("🚫 BLOCKED: EL 0 (clear to end of line) - MAIN CULPRIT!");
+                            // Clear from cursor to end of line
+                            if current_row < state.buffer.len() {
+                                for col in current_col..cols {
+                                    if col < state.buffer[current_row].len() {
+                                        state.buffer[current_row][col] = TerminalCell::default();
+                                    }
+                                }
+                            }
+                            state_changed = true;
                         }
                         1 => {
-                            // ALWAYS BLOCK
-                            println!("🚫 BLOCKED: EL 1 (clear from start to cursor)");
+                            // Clear from start of line to cursor
+                            if current_row < state.buffer.len() {
+                                for col in 0..=current_col {
+                                    if col < state.buffer[current_row].len() {
+                                        state.buffer[current_row][col] = TerminalCell::default();
+                                    }
+                                }
+                            }
+                            state_changed = true;
                         }
                         2 => {
-                            // ALWAYS BLOCK for now - even entire line clear
-                            println!("🚫 BLOCKED: EL 2 (clear entire line - completely blocked)");
+                            // Clear entire line
+                            if current_row < state.buffer.len() {
+                                for col in 0..cols {
+                                    if col < state.buffer[current_row].len() {
+                                        state.buffer[current_row][col] = TerminalCell::default();
+                                    }
+                                }
+                            }
+                            state_changed = true;
                         }
                         _ => {
-                            println!("🚫 BLOCKED: EL {} (unknown erase line)", param);
+                            // Unknown parameter, ignore
                         }
                     }
                 }
@@ -794,15 +795,13 @@ impl Perform for TerminalPerformer {
                     state.cursor_row = state.cursor_row.saturating_sub(count);
                     state.set_arrow_key_protection();
                     state_changed = true;
-                    println!("⬆️ Cursor UP by {}", count);
                 }
                 'B' => {
                     // CUD (Cursor Down) - ALWAYS ALLOW cursor movement
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
-                    state.cursor_row = (state.cursor_row + count).min(rows - 1);
+                    state.cursor_row = (state.cursor_row + count).min(state.rows - 1);
                     state.set_arrow_key_protection();
                     state_changed = true;
-                    println!("⬇️ Cursor DOWN by {}", count);
                 }
                 'C' => {
                     // CUF (Cursor Forward) - ALWAYS ALLOW cursor movement
@@ -810,7 +809,6 @@ impl Perform for TerminalPerformer {
                     state.cursor_col = (state.cursor_col + count).min(cols - 1);
                     state.set_arrow_key_protection();
                     state_changed = true;
-                    println!("➡️ Cursor RIGHT by {}", count);
                 }
                 'D' => {
                     // CUB (Cursor Backward) - ALWAYS ALLOW cursor movement
@@ -818,7 +816,6 @@ impl Perform for TerminalPerformer {
                     state.cursor_col = state.cursor_col.saturating_sub(count);
                     state.set_arrow_key_protection();
                     state_changed = true;
-                    println!("⬅️ Cursor LEFT by {}", count);
                 }
                 'm' => {
                     // SGR (Select Graphic Rendition) - colors and text attributes
@@ -836,9 +833,11 @@ impl Perform for TerminalPerformer {
                                     1 => state.current_color.bold = true,            // Bold
                                     3 => state.current_color.italic = true,          // Italic
                                     4 => state.current_color.underline = true,       // Underline
+                                    7 => state.current_color.reverse = true,         // Reverse video
                                     22 => state.current_color.bold = false, // Normal intensity
                                     23 => state.current_color.italic = false, // Not italic
                                     24 => state.current_color.underline = false, // Not underlined
+                                    27 => state.current_color.reverse = false,        // Not reversed
                                     // Foreground colors (8-color) - macOS Terminal compatible
                                     30 => state.current_color.foreground = ansi_256_to_rgb(0), // Black
                                     31 => state.current_color.foreground = ansi_256_to_rgb(1), // Red
@@ -968,7 +967,13 @@ impl Perform for TerminalPerformer {
                                     // Application cursor keys mode - silently ignore
                                 }
                                 25 => {
-                                    // Cursor visibility mode - silently ignore
+                                    // Cursor visibility mode
+                                    if c == 'h' {
+                                        state.cursor_visible = true;
+                                    } else {
+                                        state.cursor_visible = false;
+                                    }
+                                    state_changed = true;
                                 }
                                 1049 => {
                                     // Alternative screen buffer
@@ -979,6 +984,7 @@ impl Perform for TerminalPerformer {
                                         // ESC[?1049l - Switch back to main screen buffer
                                         state.switch_to_main_screen();
                                     }
+                                    state_changed = true;
                                 }
                                 _ => {
                                     // Silently ignore other private modes
@@ -1000,7 +1006,7 @@ impl Perform for TerminalPerformer {
                 'd' => {
                     // VPA (Vertical Position Absolute)
                     let row = params.iter().next().unwrap_or(&[1])[0].saturating_sub(1) as usize;
-                    state.cursor_row = row.min(rows - 1);
+                    state.cursor_row = row.min(state.rows - 1);
                     state_changed = true;
                 }
                 'G' => {
@@ -1028,14 +1034,21 @@ impl Perform for TerminalPerformer {
                     // Scroll down - ignore for now
                 }
                 'X' => {
-                    // ECH (Erase Character) - COMPLETELY BLOCKED
-                    let count = params.iter().next().unwrap_or(&[1])[0];
-                    println!("🚫 BLOCKED: ECH (erase {} characters)", count);
+                    // ECH (Erase Character) - Erase N characters from cursor position
+                    let count = params.iter().next().unwrap_or(&[1])[0] as usize;
+                    let current_row = state.cursor_row;
+                    let current_col = state.cursor_col;
+                    if current_row < state.buffer.len() {
+                        for i in 0..count {
+                            if current_col + i < state.cols {
+                                state.buffer[current_row][current_col + i] = TerminalCell::default();
+                            }
+                        }
+                    }
+                    state_changed = true;
                 }
                 'P' => {
                     // DCH (Delete Character) - COMPLETELY BLOCKED
-                    let count = params.iter().next().unwrap_or(&[1])[0];
-                    println!("🚫 BLOCKED: DCH (delete {} characters)", count);
                 }
                 '@' => {
                     // ICH (Insert Character) - ignore for now
@@ -1047,10 +1060,25 @@ impl Perform for TerminalPerformer {
                     // Delete line - ignore for now
                 }
                 's' => {
-                    // Save cursor position - ignore for now
+                    // Save cursor position (ANSI.SYS compatible)
+                    println!("💾 CSI s: Saving cursor ({}, {})", state.cursor_row, state.cursor_col);
+                    if state.is_alt_screen {
+                        state.saved_cursor_alt = (state.cursor_row, state.cursor_col);
+                    } else {
+                        state.saved_cursor_main = (state.cursor_row, state.cursor_col);
+                    }
+                    state_changed = true;
                 }
                 'u' => {
-                    // Restore cursor position - ignore for now
+                    // Restore cursor position (ANSI.SYS compatible)
+                    let (row, col) = if state.is_alt_screen {
+                        state.saved_cursor_alt
+                    } else {
+                        state.saved_cursor_main
+                    };
+                    println!("🔄 CSI u: Restoring cursor to ({}, {})", row, col);
+                    state.move_cursor_to(row, col);
+                    state_changed = true;
                 }
                 _ => {
                     // Silently ignore unknown CSI sequences
@@ -1060,14 +1088,42 @@ impl Perform for TerminalPerformer {
             
             // Signal repaint if state changed
             if state_changed {
-                if let Ok(mut needs_repaint) = self.needs_repaint.lock() {
-                    *needs_repaint = true;
-                }
+                self.egui_ctx.request_repaint();
             }
         }
     }
 
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
+    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
+        if let Ok(mut state) = self.state.lock() {
+            let mut state_changed = false;
+            match byte {
+                b'7' => {
+                    // Save Cursor (DECSC)
+                    if state.is_alt_screen {
+                        state.saved_cursor_alt = (state.cursor_row, state.cursor_col);
+                    } else {
+                        state.saved_cursor_main = (state.cursor_row, state.cursor_col);
+                    }
+                    state_changed = true;
+                }
+                b'8' => {
+                    // Restore Cursor (DECRC)
+                    let (row, col) = if state.is_alt_screen {
+                        state.saved_cursor_alt
+                    } else {
+                        state.saved_cursor_main
+                    };
+                    state.move_cursor_to(row, col);
+                    state_changed = true;
+                }
+                _ => {}
+            }
+
+            if state_changed {
+                self.egui_ctx.request_repaint();
+            }
+        }
+    }
 }
 
 // Main terminal application
@@ -1078,7 +1134,6 @@ pub struct TerminalApp {
     korean_state: KoreanInputState,
     last_tab_time: Option<Instant>,  // Tab key debouncing
     last_cursor_pos: (usize, usize),   // Track cursor position for auto-scroll
-    needs_repaint: Arc<Mutex<bool>>,   // Track if repaint is needed
 }
 
 impl TerminalApp {
@@ -1194,14 +1249,8 @@ impl TerminalApp {
     }
 
     // Helper function to send text to PTY
-    fn send_to_pty(&self, text: &str) {
+    fn send_to_pty(&mut self, text: &str) {
         if let Ok(mut writer) = self.pty_writer.lock() {
-            // Log what we're sending to PTY for debugging
-            if text.starts_with('\x1b') {
-                println!("📤 Sending to PTY: ESC sequence {:?}", text);
-            } else {
-                println!("📤 Sending to PTY: {:?}", text);
-            }
             let _ = writer.write_all(text.as_bytes());
             let _ = writer.flush();
         }
@@ -1234,63 +1283,76 @@ impl TerminalApp {
 
         cc.egui_ctx.set_fonts(fonts);
 
-        let initial_rows = 30;
-        let initial_cols = 80;
-        let terminal_state = Arc::new(Mutex::new(TerminalState::new(initial_rows, initial_cols)));
+        // Calculate actual terminal size that will be used
+        let (actual_rows, actual_cols) = {
+            // Use reasonable defaults for initial calculation
+            let available_height = 600.0f64; // Default window height
+            let available_width = 800.0f64;  // Default window width
+            let line_height = 16.0f64; // Approximate line height
+            let char_width = 7.0f64;   // Approximate character width
+            
+            let rows = ((available_height - 100.0) / line_height).floor() as usize;
+            let cols = ((available_width - 50.0) / char_width).floor() as usize;
+            
+            // Use calculated size instead of hardcoded values
+            (rows.max(20).min(60), cols.max(60).min(120))
+        };
+        
+        println!("🖥️ Calculated terminal size: {}x{}", actual_cols, actual_rows);
 
-        // Create PTY
+        // Use calculated size instead of hardcoded values
+        let terminal_state = Arc::new(Mutex::new(TerminalState::new(actual_rows, actual_cols)));
+
+        // Create PTY with calculated size
         let pty_system = portable_pty::native_pty_system();
         let pty_pair = pty_system.openpty(PtySize {
-            rows: initial_rows as u16,
-            cols: initial_cols as u16,
+            rows: actual_rows as u16,
+            cols: actual_cols as u16,
             pixel_width: 0,
             pixel_height: 0,
         })?;
 
-        // Spawn shell
+        // Spawn shell - use zsh with user configs (.zshrc, oh-my-zsh etc)
         let mut cmd = CommandBuilder::new("zsh");
+        cmd.args(&["-l"]); // Login shell with user's .zshrc
         cmd.env("TERM", "xterm-256color");
         cmd.env("LANG", "ko_KR.UTF-8");
         cmd.env("LC_ALL", "ko_KR.UTF-8");
         cmd.env("LC_CTYPE", "UTF-8");
         cmd.env("SHELL", "/bin/zsh");
         cmd.env("COLORTERM", "truecolor");
-        // Fix arrow key mapping issues
-        cmd.env("INPUTRC", "/dev/null"); // Ignore custom readline config
-        cmd.env("ZSH_NO_EXEC", "0"); // Ensure zsh processes commands normally
+        // Set terminal size explicitly with calculated values
+        cmd.env("LINES", &actual_rows.to_string());
+        cmd.env("COLUMNS", &actual_cols.to_string()); 
+        // Ensure consistent terminal behavior
+        cmd.env("TERM_PROGRAM", "wterm");
+        cmd.env("TERM_PROGRAM_VERSION", "1.0");
+        // Only disable the % symbol for partial lines - keep everything else normal
+        cmd.env("PROMPT_EOL_MARK", ""); // This removes the % at end of lines
+        // Prevent oh-my-zsh from doing complex terminal detection that might cause spacing issues
+        cmd.env("DISABLE_AUTO_TITLE", "true");
+        // Set working directory to user's home
+        cmd.env("HOME", std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()));
         let _child = pty_pair.slave.spawn_command(cmd)?;
 
         let mut pty_reader = pty_pair.master.try_clone_reader()?;
         let pty_writer = Arc::new(Mutex::new(pty_pair.master.take_writer()?));
         let pty_master = Arc::new(Mutex::new(pty_pair.master));
 
-        // Create needs_repaint flag and clone for thread
-        let needs_repaint = Arc::new(Mutex::new(true)); // Initial repaint needed
-        let needs_repaint_clone = needs_repaint.clone();
+        
 
         // Spawn background thread to read from PTY
         let state_clone = terminal_state.clone();
+        let egui_ctx_clone = cc.egui_ctx.clone();
         thread::spawn(move || {
             let mut parser = Parser::new();
-            let mut performer = TerminalPerformer::new(state_clone, needs_repaint_clone);
+            let mut performer = TerminalPerformer::new(state_clone, egui_ctx_clone);
 
             let mut buffer = [0u8; 1024];
             loop {
                 match pty_reader.read(&mut buffer) {
                     Ok(0) => break, // EOF
                     Ok(n) => {
-                        // Log raw PTY data for debugging
-                        print!("📡 PTY Raw: ");
-                        for &byte in &buffer[..n] {
-                            if byte.is_ascii_graphic() || byte == b' ' {
-                                print!("'{}'", byte as char);
-                            } else {
-                                print!("0x{:02x} ", byte);
-                            }
-                        }
-                        println!();
-                        io::stdout().flush().unwrap_or(());
-
                         // Process all bytes at once using VTE 0.15 API
                         parser.advance(&mut performer, &buffer[..n]);
                     }
@@ -1306,14 +1368,13 @@ impl TerminalApp {
             korean_state: KoreanInputState::new(),
             last_tab_time: None,
             last_cursor_pos: (0, 0),
-            needs_repaint,
         })
     }
 
     fn calculate_terminal_size(&self, available_rect: egui::Rect, ui: &egui::Ui) -> (usize, usize) {
         let font_id = egui::FontId::new(11.0, egui::FontFamily::Monospace);
         let line_height = ui.fonts(|f| f.row_height(&font_id));
-        let char_width = ui.fonts(|f| f.glyph_width(&font_id, ' '));
+        let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
 
         // Use most of the available space, leaving small margin for scrollbar
         let usable_height = available_rect.height() - 20.0; // Small margin for scrollbar
@@ -1325,6 +1386,9 @@ impl TerminalApp {
         // Minimum size constraints
         let rows = rows.max(10);
         let cols = cols.max(40);
+
+        println!("🖥️ Dynamic terminal size: {}x{} (rect: {}x{}, char: {}x{})", 
+                 cols, rows, available_rect.width(), available_rect.height(), char_width, line_height);
 
         (rows, cols)
     }
@@ -1346,7 +1410,7 @@ impl TerminalApp {
             state.resize(new_rows, new_cols);
         }
 
-        // Resize the PTY
+        // Resize the PTY and send SIGWINCH to notify shell of size change
         {
             let pty_master = self.pty_master.lock().unwrap();
             let new_size = PtySize {
@@ -1357,7 +1421,6 @@ impl TerminalApp {
             };
 
             pty_master.resize(new_size).map_err(|e| {
-                eprintln!("Failed to resize PTY: {}", e);
                 anyhow::anyhow!("PTY resize failed: {}", e)
             })?;
         }
@@ -1419,7 +1482,6 @@ impl eframe::App for TerminalApp {
 
                         // Request focus when clicked and claim keyboard input
                         if response.clicked() {
-                            println!("🔍 DEBUG: Terminal clicked - requesting focus (ID: {:?})", response.id);
                             ui.memory_mut(|mem| mem.request_focus(response.id));
                         }
                         
@@ -1464,23 +1526,33 @@ impl eframe::App for TerminalApp {
                                     egui::Vec2::new(display_width, line_height),
                                 );
 
-                                // Draw background color if not transparent and not the default black
-                                if cell.color.background != egui::Color32::TRANSPARENT
-                                    && cell.color.background != egui::Color32::BLACK
-                                {
+                                // Establish effective foreground and background colors for rendering
+                                let mut final_fg = cell.color.foreground;
+                                let mut final_bg = cell.color.background;
+
+                                // Handle reverse video by swapping colors
+                                if cell.color.reverse {
+                                    std::mem::swap(&mut final_fg, &mut final_bg);
+                                }
+
+                                // If the final background is transparent, make it the default black.
+                                // This is crucial for reverse video to be visible.
+                                if final_bg == egui::Color32::TRANSPARENT {
+                                    final_bg = egui::Color32::BLACK;
+                                }
+
+                                // Draw background rectangle if it's not the default black
+                                if final_bg != egui::Color32::BLACK {
                                     painter.rect_filled(
                                         cell_rect,
                                         egui::CornerRadius::ZERO,
-                                        cell.color.background,
+                                        final_bg,
                                     );
                                 }
 
-                                // Normal character rendering (don't draw cursor here)
-                                if cell.ch != ' '
-                                    || (cell.color.background != egui::Color32::TRANSPARENT
-                                        && cell.color.background != egui::Color32::BLACK)
-                                {
-                                    let mut text_color = cell.color.foreground;
+                                // Render character if it's not a space on a default background
+                                if cell.ch != ' ' || final_bg != egui::Color32::BLACK {
+                                    let mut text_color = final_fg;
 
                                     // Apply bold effect by making color brighter
                                     if cell.color.bold {
@@ -1595,8 +1667,8 @@ impl eframe::App for TerminalApp {
                         // Underscore cursor style - doesn't cover text
                         let cursor_color = egui::Color32::WHITE;
 
-                        // Only draw cursor if we're actually at a valid position
-                        if state.cursor_row < state.buffer.len() && state.cursor_col < state.cols {
+                        // Only draw cursor if we're actually at a valid position and it's visible
+                        if state.cursor_visible && state.cursor_row < state.buffer.len() && state.cursor_col < state.cols {
                             // Draw underscore cursor at the bottom of the character cell
                             let cursor_line_y = cursor_y + line_height - 2.0; // 2 pixels from bottom
                             let cursor_line_thickness = 2.0;
@@ -1647,22 +1719,12 @@ impl eframe::App for TerminalApp {
                 i.events.retain(|event| {
                     match event {
                         egui::Event::Key { key: egui::Key::Tab, pressed: true, .. } => {
-                            tab_events += 1;
                             tab_press_found = true;
-                            println!("🔍 DEBUG: Tab key PRESS detected! (focus: {}, event #{}/{})", has_focus, tab_events, total_events);
                             false // Always consume Tab events to prevent focus changes
                         }
                         egui::Event::Key { key: egui::Key::Tab, pressed: false, .. } => {
-                            tab_events += 1;
                             tab_release_found = true;
-                            println!("🔍 DEBUG: Tab key RELEASE detected! (event #{}/{}) - NOT SENDING", tab_events, total_events);
                             false // Also consume Tab release events
-                        }
-                        egui::Event::Key { key, pressed, .. } => {
-                            if *key == egui::Key::I {
-                                println!("🔍 DEBUG: I key event - key:{:?} pressed:{}", key, pressed);
-                            }
-                            true
                         }
                         _ => true
                     }
@@ -1670,16 +1732,8 @@ impl eframe::App for TerminalApp {
                 
                 // Only handle Tab PRESS, ignore RELEASE to prevent duplicate sending
                 if tab_press_found {
-                    println!("✅ Tab PRESS detected - will send to PTY");
                     true
-                } else if tab_release_found {
-                    println!("🚫 Tab RELEASE detected - IGNORING to prevent duplicate");
-                    false  // Don't handle release to prevent duplicate
                 } else {
-                    // Only log when no Tab events in busy periods
-                    if total_events > 0 && tab_events == 0 && total_events < 3 {
-                        println!("🔍 DEBUG: {} events processed, but no Tab events found", total_events);
-                    }
                     false
                 }
             });
@@ -1689,15 +1743,12 @@ impl eframe::App for TerminalApp {
                 let now = Instant::now();
                 let should_send = if let Some(last_time) = self.last_tab_time {
                     let elapsed = now.duration_since(last_time).as_millis();
-                    println!("🔍 DEBUG: Tab debounce check - elapsed: {}ms", elapsed);
                     elapsed > 100 // 100ms debounce (reduced from 200ms)
                 } else {
-                    println!("🔍 DEBUG: First Tab key press");
                     true // First Tab key
                 };
                 
                 if should_send {
-                    println!("📤 Sending Tab for auto-completion (focus was: {})", has_focus);
                     // Ensure terminal has focus before and after sending Tab
                     ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
                     self.finalize_korean_composition();
@@ -1705,15 +1756,11 @@ impl eframe::App for TerminalApp {
                     self.last_tab_time = Some(now);
                     // Force focus again after sending Tab to prevent losing focus
                     ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
-                    println!("✅ Tab sent successfully, focus maintained");
-                } else {
-                    println!("🚫 Tab debounced (too frequent - try again in {}ms)", 100 - now.duration_since(self.last_tab_time.unwrap()).as_millis());
                 }
             }
 
             // Handle ESC key specially using direct input check
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                println!("🔍 DEBUG: ESC key pressed (focus was: {}, composing: {})", has_focus, self.korean_state.is_composing);
                 // Ensure terminal has focus
                 ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
                 
@@ -1731,15 +1778,12 @@ impl eframe::App for TerminalApp {
                 let now = Instant::now();
                 let should_send = if let Some(last_time) = self.last_tab_time {
                     let elapsed = now.duration_since(last_time).as_millis();
-                    println!("🔍 DEBUG: Ctrl+I debounce check - elapsed: {}ms", elapsed);
                     elapsed > 100 // 100ms debounce (reduced from 200ms)
                 } else {
-                    println!("🔍 DEBUG: First Ctrl+I key press");
                     true // First Ctrl+I
                 };
                 
                 if should_send {
-                    println!("📤 Ctrl+I detected - sending as Tab for auto-completion (focus was: {})", has_focus);
                     // Ensure terminal has focus before and after sending Tab
                     ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
                     self.finalize_korean_composition();
@@ -1747,9 +1791,6 @@ impl eframe::App for TerminalApp {
                     self.last_tab_time = Some(now);
                     // Force focus again after sending Tab to prevent losing focus
                     ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
-                    println!("✅ Ctrl+I sent successfully, focus maintained");
-                } else {
-                    println!("🚫 Ctrl+I debounced (too frequent - try again in {}ms)", 100 - now.duration_since(self.last_tab_time.unwrap()).as_millis());
                 }
             }
 
@@ -1790,7 +1831,6 @@ impl eframe::App for TerminalApp {
                             } => {
                                 // Skip Tab keys completely - they're handled above
                                 if *key == egui::Key::Tab {
-                                    println!("🔍 DEBUG: Tab key in key handler (SKIPPED - handled above)");
                                     continue;
                                 }
                                 
@@ -1804,7 +1844,8 @@ impl eframe::App for TerminalApp {
                                         if let Ok(mut state) = self.terminal_state.lock() {
                                             state.clear_arrow_key_protection();
                                         }
-                                        self.send_to_pty("\n");
+                                        // Send carriage return for better terminal compatibility
+                                        self.send_to_pty("\r");
                                     }
                                     egui::Key::Space => {
                                         // Space is handled by Text event, don't handle it here
@@ -1888,12 +1929,9 @@ impl eframe::App for TerminalApp {
                                                 let target_col = current_col + 1;
                                                 if target_col <= text_end && target_col < state.cols {
                                                     state.cursor_col = target_col;
-                                                    println!("🔄 Direct cursor RIGHT: {} -> {} (user text_end: {})", current_col, state.cursor_col, text_end);
-                                                } else {
-                                                    println!("🚫 RIGHT blocked: {} (user text_end: {}, would go beyond user text)", current_col, text_end);
                                                 }
+                                                // Don't send to PTY - handle locally
                                             }
-                                            // Don't send to PTY - handle locally
                                         }
                                     }
                                     egui::Key::ArrowLeft => {
@@ -1922,12 +1960,9 @@ impl eframe::App for TerminalApp {
                                                 // Only move left if we're not at prompt end
                                                 if current_col > prompt_end {
                                                     state.cursor_col = current_col - 1;
-                                                    println!("🔄 Direct cursor LEFT: {} -> {} (prompt_end: {})", current_col, state.cursor_col, prompt_end);
-                                                } else {
-                                                    println!("🚫 LEFT blocked: {} (prompt_end: {}, would enter prompt area)", current_col, prompt_end);
                                                 }
+                                                // Don't send to PTY - handle locally
                                             }
-                                            // Don't send to PTY - handle locally
                                         }
                                     }
                                     _ => {
@@ -1990,7 +2025,6 @@ impl eframe::App for TerminalApp {
                                                     }
                                                     // Send Ctrl+L to PTY so shell displays new prompt
                                                     let _ = writer.write_all(b"\x0c");
-                                                    println!("🧹 Ctrl+L: Screen cleared, requesting new prompt");
                                                 }
                                                 egui::Key::M if modifiers.ctrl => {
                                                     // Ctrl+M is same as Enter, but Enter is already handled above
@@ -2094,14 +2128,6 @@ impl eframe::App for TerminalApp {
                 ui.label("✅ 터미널 활성화됨");
             }
         });
-
-        // Request repaint only if needed
-        if let Ok(mut needs_repaint) = self.needs_repaint.lock() {
-            if *needs_repaint {
-                ctx.request_repaint();
-                *needs_repaint = false; // Reset flag after requesting repaint
-            }
-        }
     }
 }
 
