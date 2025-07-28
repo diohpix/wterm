@@ -44,8 +44,8 @@ impl Perform for TerminalPerformer {
                 b'\r' => {
                     // Process carriage return but don't trigger newline
                     println!("🖥️ DEBUG: VTE execute \\r (carriage return only)");
-                    //state.carriage_return();
-                    //state_changed = true;
+                    state.carriage_return();
+                    //   state_changed = true;
                 }
                 b'\x08' => {
                     if !state.should_protect_from_arrow_key() {
