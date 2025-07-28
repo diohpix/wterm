@@ -1366,7 +1366,7 @@ impl TerminalApp {
         // Disable the reverse-video '%' character at the end of partial lines
         cmd.env("PROMPT_EOL_MARK", "");
         // Prevent oh-my-zsh from trying to set the window title
-        cmd.env("DISABLE_AUTO_TITLE", "true");
+        //cmd.env("DISABLE_AUTO_TITLE", "true");
 
         let _child = pty_pair.slave.spawn_command(cmd)?;
 
