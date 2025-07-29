@@ -694,7 +694,7 @@ impl eframe::App for TerminalApp {
 
                         // Only draw cursor if we're actually at a valid position and it's visible
                         if state.cursor_visible
-                            && state.cursor_row < state.screen.len()
+                            && state.cursor_row < state.rows
                             && state.cursor_col < state.cols
                         {
                             // Draw underscore cursor at the bottom of the character cell
@@ -923,24 +923,28 @@ impl eframe::App for TerminalApp {
                                                 // Find the user input area (after prompt)
                                                 let mut prompt_end = 0;
                                                 let mut text_end = 0;
-                                                if state.cursor_row < state.screen.len() {
-                                                    let row = &state.screen[state.cursor_row];
-                                                    // Find prompt end: "~ " or "✗ " pattern
+                                                let absolute_row = if state.is_alt_screen {
+                                                    state.cursor_row
+                                                } else {
+                                                    state.visible_start + state.cursor_row
+                                                };
+
+                                                if absolute_row < state.main_buffer.len() {
+                                                    let row = &state.main_buffer[absolute_row];
                                                     for i in 0..row.len().saturating_sub(1) {
                                                         if (row[i].ch == '~' || row[i].ch == '✗')
                                                             && row[i + 1].ch == ' '
                                                         {
-                                                            prompt_end = i + 2; // Position after "~ " or "✗ "
+                                                            prompt_end = i + 2;
                                                             break;
                                                         }
                                                     }
 
-                                                    // Find text end in user input area only
                                                     for (i, cell) in
                                                         row.iter().enumerate().skip(prompt_end)
                                                     {
                                                         if cell.ch != ' ' && cell.ch != '\u{0000}' {
-                                                            text_end = i + 1; // Position after last non-space character
+                                                            text_end = i + 1;
                                                         }
                                                     }
                                                 }
@@ -967,14 +971,19 @@ impl eframe::App for TerminalApp {
 
                                                 // Find prompt end to limit leftward movement
                                                 let mut prompt_end = 0;
-                                                if state.cursor_row < state.screen.len() {
-                                                    let row = &state.screen[state.cursor_row];
-                                                    // Find prompt end: "~ " or "✗ " pattern
+                                                let absolute_row = if state.is_alt_screen {
+                                                    state.cursor_row
+                                                } else {
+                                                    state.visible_start + state.cursor_row
+                                                };
+
+                                                if absolute_row < state.main_buffer.len() {
+                                                    let row = &state.main_buffer[absolute_row];
                                                     for i in 0..row.len().saturating_sub(1) {
                                                         if (row[i].ch == '~' || row[i].ch == '✗')
                                                             && row[i + 1].ch == ' '
                                                         {
-                                                            prompt_end = i + 2; // Position after "~ " or "✗ "
+                                                            prompt_end = i + 2;
                                                             break;
                                                         }
                                                     }

@@ -52,10 +52,6 @@ pub struct TerminalState {
     pub main_buffer: VecDeque<Vec<TerminalCell>>,
     pub visible_start: usize, // Start of currently visible area
 
-    // Legacy compatibility (will point to visible area of main_buffer)
-    pub screen: Vec<Vec<TerminalCell>>,
-    pub scrollback: VecDeque<Vec<TerminalCell>>,
-
     pub cursor_row: usize, // Relative to visible area
     pub cursor_col: usize,
     pub rows: usize, // Visible rows
@@ -82,14 +78,12 @@ impl TerminalState {
             main_buffer.push_back(vec![TerminalCell::default(); cols]);
         }
 
-        let screen = vec![vec![TerminalCell::default(); cols]; rows];
+        let _screen = vec![vec![TerminalCell::default(); cols]; rows];
         let alt_screen = vec![vec![TerminalCell::default(); cols]; rows];
 
         Self {
             main_buffer,
             visible_start: 0,
-            screen,
-            scrollback: VecDeque::new(), // Keep for compatibility, but won't be used
             cursor_row: 0,
             cursor_col: 0,
             rows,
@@ -105,29 +99,12 @@ impl TerminalState {
         }
     }
 
-    // Update the legacy screen reference to point to visible area
-    fn update_screen_reference(&mut self) {
-        if self.is_alt_screen {
-            self.screen = self.alt_screen.clone();
-        } else {
-            // Point screen to the visible portion of main_buffer
-            self.screen.clear();
-            for i in 0..self.rows {
-                let buffer_index = self.visible_start + i;
-                if buffer_index < self.main_buffer.len() {
-                    self.screen.push(self.main_buffer[buffer_index].clone());
-                } else {
-                    self.screen.push(vec![TerminalCell::default(); self.cols]);
-                }
-            }
-        }
-    }
+    
 
     // Ensure we're always at the bottom when new content arrives
     fn ensure_at_bottom(&mut self) {
         if !self.is_alt_screen && self.main_buffer.len() >= self.rows {
             self.visible_start = self.main_buffer.len() - self.rows;
-            self.update_screen_reference();
         }
     }
 
@@ -142,7 +119,6 @@ impl TerminalState {
         }
 
         self.visible_start = 0;
-        self.update_screen_reference();
         self.cursor_row = 0;
         self.cursor_col = 0;
 
@@ -322,7 +298,6 @@ impl TerminalState {
         );
 
         // Update the active screen based on the current screen mode
-        self.update_screen_reference();
 
         // Update dimensions
         self.rows = new_rows;
@@ -425,30 +400,25 @@ impl TerminalState {
 
     pub fn backspace(&mut self) {
         if self.cursor_col > 0 {
-            // Find prompt end to prevent deleting into prompt area
+            let absolute_row = if self.is_alt_screen {
+                self.cursor_row
+            } else {
+                self.visible_start + self.cursor_row
+            };
+
             let mut prompt_end = 0;
-            if self.cursor_row < self.screen.len() {
-                let row = &self.screen[self.cursor_row];
-                // Find prompt end: "~ " or "✗ " pattern
+            if absolute_row < self.main_buffer.len() {
+                let row = &self.main_buffer[absolute_row];
                 for i in 0..row.len().saturating_sub(1) {
                     if (row[i].ch == '~' || row[i].ch == '✗') && row[i + 1].ch == ' ' {
-                        prompt_end = i + 2; // Position after "~ " or "✗ "
+                        prompt_end = i + 2;
                         break;
                     }
                 }
             }
 
-            // Only allow backspace if cursor is beyond prompt area
             if self.cursor_col > prompt_end {
-                // Move cursor back to find the character to delete
                 let mut delete_col = self.cursor_col - 1;
-
-                // If we're on a continuation marker (\u{0000}), move back to the actual character
-                let absolute_row = if self.is_alt_screen {
-                    self.cursor_row
-                } else {
-                    self.visible_start + self.cursor_row
-                };
 
                 while delete_col > 0
                     && absolute_row < self.main_buffer.len()
@@ -458,16 +428,13 @@ impl TerminalState {
                     delete_col -= 1;
                 }
 
-                // Double-check we're still in user input area after finding the actual character
                 if delete_col >= prompt_end
                     && absolute_row < self.main_buffer.len()
                     && delete_col < self.main_buffer[absolute_row].len()
                 {
-                    // Get the character we're about to delete
                     let ch_to_delete = self.main_buffer[absolute_row][delete_col].ch;
                     let char_width = ch_to_delete.width().unwrap_or(1);
 
-                    // Clear the character and any continuation markers
                     for i in 0..char_width {
                         if delete_col + i < self.cols
                             && delete_col + i < self.main_buffer[absolute_row].len()
@@ -477,7 +444,6 @@ impl TerminalState {
                         }
                     }
 
-                    // Move cursor to the position of the deleted character
                     self.cursor_col = delete_col;
                 }
             }
@@ -525,7 +491,6 @@ impl TerminalState {
             self.is_alt_screen = true;
             self.cursor_row = 0;
             self.cursor_col = 0;
-            self.update_screen_reference();
 
             println!("🔄 Switched to alternative screen buffer (clean screen)");
         }
@@ -538,7 +503,6 @@ impl TerminalState {
             self.is_alt_screen = false;
             self.cursor_row = self.saved_cursor_main.0;
             self.cursor_col = self.saved_cursor_main.1;
-            self.update_screen_reference();
 
             println!("🔄 Restored main screen buffer");
         }
