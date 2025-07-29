@@ -394,109 +394,238 @@ impl eframe::App for TerminalApp {
                 .unwrap();
 
             // Terminal display with focus handling and proper scrolling
-            let mut scroll_area = egui::ScrollArea::vertical()
+            let scroll_area = egui::ScrollArea::vertical()
                 .id_salt("terminal_scroll") // Use id_salt for persistent state (corrected from id_source)
                 .stick_to_bottom(true)
                 .auto_shrink([false; 2]);
-                
+
             let terminal_response = scroll_area.show(ui, |ui| {
-                    // Calculate exact font metrics
-                    let font_id = egui::FontId::new(11.0, egui::FontFamily::Monospace);
-                    let line_height = ui.fonts(|f| f.row_height(&font_id));
-                    // Use a consistent character for width calculation (use 'M' for monospace)
-                    let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
+                // Calculate exact font metrics
+                let font_id = egui::FontId::new(11.0, egui::FontFamily::Monospace);
+                let line_height = ui.fonts(|f| f.row_height(&font_id));
+                // Use a consistent character for width calculation (use 'M' for monospace)
+                let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
 
-                    // Calculate terminal content size
-                    if let Ok(state) = self.terminal_state.lock() {
-                        // 효율적인 렌더링: 복사 없이 직접 접근
-                        let total_lines = if state.is_alt_screen {
-                            state.alt_screen.len()
+                // Calculate terminal content size
+                if let Ok(state) = self.terminal_state.lock() {
+                    // 효율적인 렌더링: 복사 없이 직접 접근
+                    let total_lines = if state.is_alt_screen {
+                        state.alt_screen.len()
+                    } else {
+                        state.main_buffer.len()
+                    };
+
+                    let content_width = state.cols as f32 * char_width;
+
+                    // 스크롤 영역은 실제 콘텐츠 크기 기준
+                    let visible_content_lines = if state.is_alt_screen {
+                        // Alt screen: 화면 크기 고정
+                        state.rows
+                    } else {
+                        // Main screen: 실제 히스토리 크기만 사용
+                        total_lines
+                    };
+
+                    let content_height = visible_content_lines as f32 * line_height;
+
+                    // Only log render info when there are significant changes to avoid spam
+                    // println!("🎥 RENDER: total_lines={}, visible_content_lines={}, available_screen_lines={}, content_height={:.1}",
+                    //         total_lines, visible_content_lines, available_screen_lines, content_height);
+
+                    // Allocate exact space needed for the *entire* virtual terminal content
+                    // This makes the scrollbar behave correctly.
+                    let (response, painter) = ui.allocate_painter(
+                        egui::Vec2::new(content_width, content_height),
+                        egui::Sense::click_and_drag()
+                            .union(egui::Sense::focusable_noninteractive()),
+                    );
+
+                    // Draw terminal background ONLY for the visible part of the terminal.
+                    // This is a major performance optimization.
+                    painter.rect_filled(
+                        ui.clip_rect(),
+                        egui::CornerRadius::ZERO,
+                        egui::Color32::BLACK,
+                    );
+
+                    // Request focus when clicked and claim keyboard input
+                    if response.clicked() {
+                        ui.memory_mut(|mem| mem.request_focus(response.id));
+                    }
+
+                    // Always try to maintain focus on the terminal
+                    if response.hovered() || response.has_focus() {
+                        ui.memory_mut(|mem| mem.request_focus(response.id));
+                    }
+
+                    // Force focus when any interaction happens
+                    let interaction = response.interact(egui::Sense::click_and_drag());
+                    if interaction.clicked() || interaction.dragged() || interaction.hovered() {
+                        ui.memory_mut(|mem| mem.request_focus(response.id));
+                    }
+
+                    // If focused, we will handle keyboard input in the event loop
+
+                    // --- Row Virtualization ---
+                    // Calculate which rows are visible within the clip_rect.
+                    let first_visible_row = ((ui.clip_rect().top() - response.rect.top())
+                        / line_height)
+                        .floor()
+                        .max(0.0) as usize;
+
+                    let last_visible_row = ((ui.clip_rect().bottom() - response.rect.top())
+                        / line_height)
+                        .ceil() as usize;
+                    let last_visible_row =
+                        last_visible_row.min(visible_content_lines).min(total_lines);
+
+                    // First, draw only the *visible* terminal content
+                    for row_idx in first_visible_row..last_visible_row {
+                        if row_idx >= visible_content_lines || row_idx >= total_lines {
+                            break;
+                        }
+                        let row = if state.is_alt_screen {
+                            &state.alt_screen[row_idx]
                         } else {
-                            state.main_buffer.len()
+                            &state.main_buffer[row_idx]
                         };
-                        
-                        let content_width = state.cols as f32 * char_width;
+                        let y = response.rect.top() + row_idx as f32 * line_height;
+                        let mut col_offset = 0.0;
 
-                        // 스크롤 영역 크기: 전체 히스토리 기준
-                        let available_screen_lines =
-                            (remaining_rect.height() / line_height).floor() as usize;
-
-                        // 스크롤 영역은 실제 콘텐츠 크기 기준
-                        let visible_content_lines = if state.is_alt_screen {
-                            // Alt screen: 화면 크기 고정
-                            state.rows
-                        } else {
-                            // Main screen: 실제 히스토리 크기만 사용
-                            total_lines
-                        };
-
-                        let content_height = visible_content_lines as f32 * line_height;
-
-                        println!("🎥 RENDER: total_lines={}, visible_content_lines={}, available_screen_lines={}, content_height={:.1}", 
-                                total_lines, visible_content_lines, available_screen_lines, content_height);
-
-                        // Allocate exact space needed for the *entire* virtual terminal content
-                        // This makes the scrollbar behave correctly.
-                        let (response, painter) = ui.allocate_painter(
-                            egui::Vec2::new(content_width, content_height),
-                            egui::Sense::click_and_drag()
-                                .union(egui::Sense::focusable_noninteractive()),
-                        );
-
-                        // Draw terminal background ONLY for the visible part of the terminal.
-                        // This is a major performance optimization.
-                        painter.rect_filled(
-                            ui.clip_rect(),
-                            egui::CornerRadius::ZERO,
-                            egui::Color32::BLACK,
-                        );
-
-                        // Request focus when clicked and claim keyboard input
-                        if response.clicked() {
-                            ui.memory_mut(|mem| mem.request_focus(response.id));
-                        }
-
-                        // Always try to maintain focus on the terminal
-                        if response.hovered() || response.has_focus() {
-                            ui.memory_mut(|mem| mem.request_focus(response.id));
-                        }
-
-                        // Force focus when any interaction happens
-                        let interaction = response.interact(egui::Sense::click_and_drag());
-                        if interaction.clicked() || interaction.dragged() || interaction.hovered() {
-                            ui.memory_mut(|mem| mem.request_focus(response.id));
-                        }
-
-                        // If focused, we will handle keyboard input in the event loop
-
-                        // --- Row Virtualization ---
-                        // Calculate which rows are visible within the clip_rect.
-                        let first_visible_row = ((ui.clip_rect().top() - response.rect.top())
-                            / line_height)
-                            .floor()
-                            .max(0.0) as usize;
-
-                        let last_visible_row = ((ui.clip_rect().bottom() - response.rect.top())
-                            / line_height)
-                            .ceil() as usize;
-                        let last_visible_row = last_visible_row
-                            .min(visible_content_lines)
-                            .min(total_lines);
-
-                        // First, draw only the *visible* terminal content
-                        for row_idx in first_visible_row..last_visible_row {
-                            if row_idx >= visible_content_lines || row_idx >= total_lines {
-                                break;
+                        for (_col_idx, cell) in row.iter().enumerate() {
+                            // Skip continuation markers for wide characters
+                            if cell.ch == '\u{0000}' {
+                                continue;
                             }
-                            let row = if state.is_alt_screen {
-                                &state.alt_screen[row_idx]
-                            } else {
-                                &state.main_buffer[row_idx]
-                            };
-                            let y = response.rect.top() + row_idx as f32 * line_height;
-                            let mut col_offset = 0.0;
 
-                            for (_col_idx, cell) in row.iter().enumerate() {
+                            // For monospace font, all characters should have same width except for wide chars
+                            let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
+                                2 // Keep wide characters (like Korean) as 2 units
+                            } else {
+                                1 // All other characters (including space) are 1 unit
+                            };
+                            let display_width = char_display_width as f32 * char_width;
+
+                            let x = response.rect.left() + col_offset;
+                            let pos = egui::Pos2::new(x, y);
+                            let cell_rect = egui::Rect::from_min_size(
+                                pos,
+                                egui::Vec2::new(display_width, line_height),
+                            );
+
+                            // Establish effective foreground and background colors for rendering
+                            let mut final_fg = cell.color.foreground;
+                            let mut final_bg = cell.color.background;
+
+                            // Handle reverse video by swapping colors
+                            if cell.color.reverse {
+                                std::mem::swap(&mut final_fg, &mut final_bg);
+
+                                // Fix reverse video colors to ensure visibility
+                                if final_bg == egui::Color32::TRANSPARENT {
+                                    final_bg = egui::Color32::BLACK;
+                                }
+                                if final_fg == egui::Color32::TRANSPARENT {
+                                    final_fg = egui::Color32::WHITE; // Ensure text is visible on background
+                                }
+
+                                // If colors are too similar after swap, force contrast
+                                if final_fg == final_bg {
+                                    if final_bg == egui::Color32::BLACK {
+                                        final_fg = egui::Color32::WHITE;
+                                    } else {
+                                        final_fg = egui::Color32::BLACK;
+                                    }
+                                }
+                            } else {
+                                // Normal mode: ensure background transparency is handled
+                                if final_bg == egui::Color32::TRANSPARENT {
+                                    final_bg = egui::Color32::BLACK;
+                                }
+                            }
+
+                            // Draw background rectangle if it's not the default black
+                            if final_bg != egui::Color32::BLACK {
+                                painter.rect_filled(cell_rect, egui::CornerRadius::ZERO, final_bg);
+                            }
+
+                            // Render character if it's not a space on a default background
+                            if cell.ch != ' ' || final_bg != egui::Color32::BLACK {
+                                let mut text_color = final_fg;
+
+                                // Apply bold effect by making color brighter
+                                if cell.color.bold {
+                                    let [r, g, b, a] = text_color.to_array();
+                                    text_color = egui::Color32::from_rgba_unmultiplied(
+                                        (r as f32 * 1.3).min(255.0) as u8,
+                                        (g as f32 * 1.3).min(255.0) as u8,
+                                        (b as f32 * 1.3).min(255.0) as u8,
+                                        a,
+                                    );
+                                }
+
+                                if cell.ch != ' ' {
+                                    painter.text(
+                                        pos,
+                                        egui::Align2::LEFT_TOP,
+                                        cell.ch,
+                                        font_id.clone(),
+                                        text_color,
+                                    );
+                                }
+
+                                // Draw underline if enabled
+                                if cell.color.underline {
+                                    let underline_y = y + line_height - 1.0;
+                                    painter.line_segment(
+                                        [
+                                            egui::Pos2::new(x, underline_y),
+                                            egui::Pos2::new(x + display_width, underline_y),
+                                        ],
+                                        egui::Stroke::new(1.0, text_color),
+                                    );
+                                }
+                            }
+
+                            col_offset += display_width;
+                        }
+                    }
+
+                    // Now draw cursor separately at correct position
+                    let cursor_absolute_row = if state.is_alt_screen {
+                        state.cursor_row
+                    } else {
+                        state.visible_start + state.cursor_row
+                    };
+                    let cursor_y = response.rect.top() + cursor_absolute_row as f32 * line_height;
+
+                    // Only draw the cursor if it's within the visible area
+                    if cursor_y >= ui.clip_rect().top()
+                        && cursor_y + line_height <= ui.clip_rect().bottom()
+                    {
+                        // Calculate precise cursor X position by walking through the row
+                        let mut cursor_x = response.rect.left();
+
+                        let cursor_row_data = if state.is_alt_screen {
+                            if cursor_absolute_row < state.alt_screen.len() {
+                                Some(&state.alt_screen[cursor_absolute_row])
+                            } else {
+                                None
+                            }
+                        } else {
+                            if cursor_absolute_row < state.main_buffer.len() {
+                                Some(&state.main_buffer[cursor_absolute_row])
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some(row) = cursor_row_data {
+                            for (col_idx, cell) in row.iter().enumerate() {
+                                if col_idx >= state.cursor_col {
+                                    break;
+                                }
+
                                 // Skip continuation markers for wide characters
                                 if cell.ch == '\u{0000}' {
                                     continue;
@@ -508,225 +637,87 @@ impl eframe::App for TerminalApp {
                                 } else {
                                     1 // All other characters (including space) are 1 unit
                                 };
-                                let display_width = char_display_width as f32 * char_width;
-
-                                let x = response.rect.left() + col_offset;
-                                let pos = egui::Pos2::new(x, y);
-                                let cell_rect = egui::Rect::from_min_size(
-                                    pos,
-                                    egui::Vec2::new(display_width, line_height),
-                                );
-
-                                // Establish effective foreground and background colors for rendering
-                                let mut final_fg = cell.color.foreground;
-                                let mut final_bg = cell.color.background;
-
-                                // Handle reverse video by swapping colors
-                                if cell.color.reverse {
-                                    std::mem::swap(&mut final_fg, &mut final_bg);
-
-                                    // Fix reverse video colors to ensure visibility
-                                    if final_bg == egui::Color32::TRANSPARENT {
-                                        final_bg = egui::Color32::BLACK;
-                                    }
-                                    if final_fg == egui::Color32::TRANSPARENT {
-                                        final_fg = egui::Color32::WHITE; // Ensure text is visible on background
-                                    }
-
-                                    // If colors are too similar after swap, force contrast
-                                    if final_fg == final_bg {
-                                        if final_bg == egui::Color32::BLACK {
-                                            final_fg = egui::Color32::WHITE;
-                                        } else {
-                                            final_fg = egui::Color32::BLACK;
-                                        }
-                                    }
-                                } else {
-                                    // Normal mode: ensure background transparency is handled
-                                    if final_bg == egui::Color32::TRANSPARENT {
-                                        final_bg = egui::Color32::BLACK;
-                                    }
-                                }
-
-                                // Draw background rectangle if it's not the default black
-                                if final_bg != egui::Color32::BLACK {
-                                    painter.rect_filled(
-                                        cell_rect,
-                                        egui::CornerRadius::ZERO,
-                                        final_bg,
-                                    );
-                                }
-
-                                // Render character if it's not a space on a default background
-                                if cell.ch != ' ' || final_bg != egui::Color32::BLACK {
-                                    let mut text_color = final_fg;
-
-                                    // Apply bold effect by making color brighter
-                                    if cell.color.bold {
-                                        let [r, g, b, a] = text_color.to_array();
-                                        text_color = egui::Color32::from_rgba_unmultiplied(
-                                            (r as f32 * 1.3).min(255.0) as u8,
-                                            (g as f32 * 1.3).min(255.0) as u8,
-                                            (b as f32 * 1.3).min(255.0) as u8,
-                                            a,
-                                        );
-                                    }
-
-                                    if cell.ch != ' ' {
-                                        painter.text(
-                                            pos,
-                                            egui::Align2::LEFT_TOP,
-                                            cell.ch,
-                                            font_id.clone(),
-                                            text_color,
-                                        );
-                                    }
-
-                                    // Draw underline if enabled
-                                    if cell.color.underline {
-                                        let underline_y = y + line_height - 1.0;
-                                        painter.line_segment(
-                                            [
-                                                egui::Pos2::new(x, underline_y),
-                                                egui::Pos2::new(x + display_width, underline_y),
-                                            ],
-                                            egui::Stroke::new(1.0, text_color),
-                                        );
-                                    }
-                                }
-
-                                col_offset += display_width;
+                                cursor_x += char_display_width as f32 * char_width;
                             }
                         }
 
-                        // Now draw cursor separately at correct position
-                        let cursor_absolute_row = if state.is_alt_screen {
-                            state.cursor_row
+                        // Calculate cursor width for Korean composition if needed
+                        let cursor_width = if self.korean_state.is_composing {
+                            // Korean composing characters are always wide (2 chars)
+                            2.0 * char_width
                         } else {
-                            state.visible_start + state.cursor_row
+                            // Normal cursor width
+                            char_width
                         };
-                        let cursor_y =
-                            response.rect.top() + cursor_absolute_row as f32 * line_height;
 
-                        // Only draw the cursor if it's within the visible area
-                        if cursor_y >= ui.clip_rect().top()
-                            && cursor_y + line_height <= ui.clip_rect().bottom()
-                        {
-                            // Calculate precise cursor X position by walking through the row
-                            let mut cursor_x = response.rect.left();
+                        // Draw composing character preview if Korean composition is active
+                        if self.korean_state.is_composing {
+                            if let Some(composing_char) = self.korean_state.get_current_char() {
+                                // Draw composing character with a different color (gray/dimmed) to show it's temporary
+                                let preview_color = egui::Color32::from_rgb(150, 150, 150); // Gray preview color
 
-                            let cursor_row_data = if state.is_alt_screen {
-                                if cursor_absolute_row < state.alt_screen.len() {
-                                    Some(&state.alt_screen[cursor_absolute_row])
-                                } else {
-                                    None
-                                }
-                            } else {
-                                if cursor_absolute_row < state.main_buffer.len() {
-                                    Some(&state.main_buffer[cursor_absolute_row])
-                                } else {
-                                    None
-                                }
-                            };
+                                painter.text(
+                                    egui::Pos2::new(cursor_x, cursor_y),
+                                    egui::Align2::LEFT_TOP,
+                                    composing_char,
+                                    font_id.clone(),
+                                    preview_color,
+                                );
 
-                            if let Some(row) = cursor_row_data {
-                                for (col_idx, cell) in row.iter().enumerate() {
-                                    if col_idx >= state.cursor_col {
-                                        break;
-                                    }
-
-                                    // Skip continuation markers for wide characters
-                                    if cell.ch == '\u{0000}' {
-                                        continue;
-                                    }
-
-                                    // For monospace font, all characters should have same width except for wide chars
-                                    let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
-                                        2 // Keep wide characters (like Korean) as 2 units
-                                    } else {
-                                        1 // All other characters (including space) are 1 unit
-                                    };
-                                    cursor_x += char_display_width as f32 * char_width;
-                                }
-                            }
-
-                            // Calculate cursor width for Korean composition if needed
-                            let cursor_width = if self.korean_state.is_composing {
-                                // Korean composing characters are always wide (2 chars)
-                                2.0 * char_width
-                            } else {
-                                // Normal cursor width
-                                char_width
-                            };
-
-                            // Draw composing character preview if Korean composition is active
-                            if self.korean_state.is_composing {
-                                if let Some(composing_char) = self.korean_state.get_current_char() {
-                                    // Draw composing character with a different color (gray/dimmed) to show it's temporary
-                                    let preview_color = egui::Color32::from_rgb(150, 150, 150); // Gray preview color
-
-                                    painter.text(
-                                        egui::Pos2::new(cursor_x, cursor_y),
-                                        egui::Align2::LEFT_TOP,
-                                        composing_char,
-                                        font_id.clone(),
-                                        preview_color,
-                                    );
-
-                                    // Draw a subtle background to make the preview more visible
-                                    let preview_bg =
-                                        egui::Color32::from_rgba_unmultiplied(100, 100, 100, 50);
-                                    painter.rect_filled(
-                                        egui::Rect::from_min_size(
-                                            egui::Pos2::new(cursor_x, cursor_y),
-                                            egui::Vec2::new(cursor_width, line_height),
-                                        ),
-                                        egui::CornerRadius::ZERO,
-                                        preview_bg,
-                                    );
-
-                                    // Redraw the composing character on top of background
-                                    painter.text(
-                                        egui::Pos2::new(cursor_x, cursor_y),
-                                        egui::Align2::LEFT_TOP,
-                                        composing_char,
-                                        font_id.clone(),
-                                        preview_color,
-                                    );
-                                }
-                            }
-
-                            // Underscore cursor style - doesn't cover text
-                            let cursor_color = egui::Color32::WHITE;
-
-                            // Only draw cursor if we're actually at a valid position and it's visible
-                            if state.cursor_visible
-                                && state.cursor_row < state.screen.len()
-                                && state.cursor_col < state.cols
-                            {
-                                // Draw underscore cursor at the bottom of the character cell
-                                let cursor_line_y = cursor_y + line_height - 2.0; // 2 pixels from bottom
-                                let cursor_line_thickness = 2.0;
-
+                                // Draw a subtle background to make the preview more visible
+                                let preview_bg =
+                                    egui::Color32::from_rgba_unmultiplied(100, 100, 100, 50);
                                 painter.rect_filled(
                                     egui::Rect::from_min_size(
-                                        egui::Pos2::new(cursor_x, cursor_line_y),
-                                        egui::Vec2::new(cursor_width, cursor_line_thickness),
+                                        egui::Pos2::new(cursor_x, cursor_y),
+                                        egui::Vec2::new(cursor_width, line_height),
                                     ),
                                     egui::CornerRadius::ZERO,
-                                    cursor_color,
+                                    preview_bg,
+                                );
+
+                                // Redraw the composing character on top of background
+                                painter.text(
+                                    egui::Pos2::new(cursor_x, cursor_y),
+                                    egui::Align2::LEFT_TOP,
+                                    composing_char,
+                                    font_id.clone(),
+                                    preview_color,
                                 );
                             }
                         }
 
-                        // Auto-scroll is now handled by `stick_to_bottom(true)` on the ScrollArea.
-                        // No manual scrolling logic is needed anymore.
+                        // Underscore cursor style - doesn't cover text
+                        let cursor_color = egui::Color32::WHITE;
 
-                        response
-                    } else {
-                        ui.allocate_response(egui::Vec2::new(800.0, 600.0), egui::Sense::click())
+                        // Only draw cursor if we're actually at a valid position and it's visible
+                        if state.cursor_visible
+                            && state.cursor_row < state.screen.len()
+                            && state.cursor_col < state.cols
+                        {
+                            // Draw underscore cursor at the bottom of the character cell
+                            let cursor_line_y = cursor_y + line_height - 2.0; // 2 pixels from bottom
+                            let cursor_line_thickness = 2.0;
+
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::Pos2::new(cursor_x, cursor_line_y),
+                                    egui::Vec2::new(cursor_width, cursor_line_thickness),
+                                ),
+                                egui::CornerRadius::ZERO,
+                                cursor_color,
+                            );
+                        }
                     }
-                });
+
+                    // Auto-scroll is now handled by `stick_to_bottom(true)` on the ScrollArea.
+                    // No manual scrolling logic is needed anymore.
+
+                    response
+                } else {
+                    ui.allocate_response(egui::Vec2::new(800.0, 600.0), egui::Sense::click())
+                }
+            });
 
             // Handle keyboard input when terminal has focus
             let has_focus = ui.memory(|mem| mem.has_focus(terminal_response.inner.id));
