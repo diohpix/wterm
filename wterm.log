@@ -1,0 +1,115 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running `target/debug/wterm`
+🖥️ Initial estimated terminal size: 129x41 (967x656px)
+🖥️ Resizing terminal: 129x41 -> 177x55
+📊 Content before resize: 0 chars, alt_screen: false
+🗂️ Before resize: scrollback=0 lines, main_screen=0 chars
+🔄 Resize debug: old=129x41, new=177x55, copy=129x41
+📋 Copy range: old_start=0, new_start=14
+📝 Preserved 0 non-space characters
+🔄 Switching to main_screen with 0 chars
+🏁 After resize: scrollback=0 lines, main_screen=0 chars
+📊 Content after resize: 0 chars
+🚽 PTY Read (179 bytes): string: "                                                                                                                                                                                \r \r"
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🚽 PTY Read (43 bytes): string: "\u{1b}]7;file://AL01599571.local/Users/xiphoid\u{1b}\\"
+🖥️ DEBUG: VTE osc_dispatch - bell_terminated: false, params: ["7", "file://AL01599571.local/Users/xiphoid"]
+🚽 PTY Read (43 bytes): string: "\r\u{1b}[0m\u{1b}[27m\u{1b}[24m\u{1b}[J\u{1b}[01;32m➜  \u{1b}[36m~\u{1b}[00m "
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🚽 PTY Read (18 bytes): string: "\u{1b}[K\u{1b}[?1h\u{1b}=\u{1b}[?2004h"
+🚽 PTY Read (1 bytes): string: "l"
+🚽 PTY Read (3 bytes): string: "\u{8}ls"
+🚽 PTY Read (1 bytes): string: " "
+🚽 PTY Read (1 bytes): string: "-"
+🚽 PTY Read (1 bytes): string: "l"
+🚽 PTY Read (7 bytes): string: "\u{1b}[?1l\u{1b}>"
+🚽 PTY Read (11 bytes): string: "\u{1b}[?2004l\r\r\n"
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🚽 PTY Read (9 bytes): string: "total 8\r\n"
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🚽 PTY Read (84 bytes): string: "drwx------@   5 xiphoid  staff   160  5  9  2023 \u{1b}[1m\u{1b}[36mApplications\u{1b}[39;49m\u{1b}[0m\r\n"
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🚽 PTY Read (1024 bytes): string: "drwxr-xr-x    3 xiphoid  staff    96  3 21 18:56 \u{1b}[1m\u{1b}[36mauto\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   21 xiphoid  staff   672  4 24 10:50 \u{1b}[1m\u{1b}[36mBitNet\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   22 xiphoid  staff   704  7 12  2023 \u{1b}[1m\u{1b}[36mcashflow\u{1b}[39;49m\u{1b}[0m\r\n-rw-r--r--    1 xiphoid  staff    55  4 10 17:44 data.json\r\ndrwx------@  48 xiphoid  staff  1536  7 29 12:53 \u{1b}[1m\u{1b}[36mDesktop\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   12 xiphoid  staff   384 11  7  2024 \u{1b}[1m\u{1b}[36mdevtool\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@   5 xiphoid  staff   160  5 21 11:27 \u{1b}[1m\u{1b}[36mDocuments\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@  30 xiphoid  staff   960  7 28 16:44 \u{1b}[1m\u{1b}[36mDownloads\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  3 12 15:29 \u{1b}[1m\u{1b}[36mextract\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  3 12 15:45 \u{1b}[1m\u{1b}[36mextract2\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  9 25  2024 \u{1b}[1m\u{1b}[36mgia\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   16 xiphoid  staff   512  7 28 12:36 \u{1b}[1m\u{1b}[36mgit\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  7 14 18:06 \u{1b}[1m\u{1b}[36mgo\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    3 xiphoid  st"
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🚽 PTY Read (1024 bytes): string: "aff    96 11  1  2022 \u{1b}[1m\u{1b}[36mIdeaProjects\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x@   2 xiphoid  staff    64  7 29 14:25 \u{1b}[1m\u{1b}[36mIdeaSnapshots\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@ 115 xiphoid  staff  3680  4  2 10:26 \u{1b}[1m\u{1b}[36mLibrary\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  7 16 15:53 \u{1b}[1m\u{1b}[36mmcp\u{1b}[39;49m\u{1b}[0m\r\ndrwx------    4 xiphoid  staff   128 11  2  2022 \u{1b}[1m\u{1b}[36mMovies\u{1b}[39;49m\u{1b}[0m\r\ndrwx------+   4 xiphoid  staff   128 12 10  2022 \u{1b}[1m\u{1b}[36mMusic\u{1b}[39;49m\u{1b}[0m\r\ndrwx------+   4 xiphoid  staff   128 11  1  2022 \u{1b}[1m\u{1b}[36mPictures\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x+   4 xiphoid  staff   128 11  1  2022 \u{1b}[1m\u{1b}[36mPublic\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   15 xiphoid  staff   480  3  7  2024 \u{1b}[1m\u{1b}[36msb\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x@  15 xiphoid  staff   480  4 21 12:05 \u{1b}[1m\u{1b}[36mSide scroller tutorial\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   17 xiphoid  staff   544  2 19 10:46 \u{1b}[1m\u{1b}[36mskm\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  3 26 18:02 \u{1b}[1m\u{1b}[36mtemp2\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   12 xiphoid  staff   384  7 16 17:01 \u{1b}[1m\u{1b}[36mtmp\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    3 xiph"
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🚽 PTY Read (278 bytes): string: "oid  staff    96  3 12 16:48 \u{1b}[1m\u{1b}[36mwork\u{1b}[39;49m\u{1b}[0m\r\n                                                                                                                                                                                \r \r\u{1b}]7;file://AL01599571.local/Users/xiphoid\u{1b}\\"
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE osc_dispatch - bell_terminated: false, params: ["7", "file://AL01599571.local/Users/xiphoid"]
+🚽 PTY Read (61 bytes): string: "\r\u{1b}[0m\u{1b}[27m\u{1b}[24m\u{1b}[J\u{1b}[01;32m➜  \u{1b}[36m~\u{1b}[00m \u{1b}[K\u{1b}[?1h\u{1b}=\u{1b}[?2004h"
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ Resizing terminal: 177x55 -> 179x55
+📊 Content before resize: 1164 chars, alt_screen: false
+🗂️ Before resize: scrollback=0 lines, main_screen=0 chars
+🔄 Resize debug: old=177x55, new=179x55, copy=177x55
+📋 Copy range: old_start=0, new_start=0
+📝 Preserved 0 non-space characters
+🔄 Switching to main_screen with 0 chars
+🏁 After resize: scrollback=0 lines, main_screen=0 chars
+📊 Content after resize: 0 chars
+🚽 PTY Read (44 bytes): string: "\r\r\u{1b}[0m\u{1b}[27m\u{1b}[24m\u{1b}[J\u{1b}[01;32m➜  \u{1b}[36m~\u{1b}[00m "
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🚽 PTY Read (7 bytes): string: "\u{1b}[?1l\u{1b}>"
+🚽 PTY Read (11 bytes): string: "\u{1b}[?2004l\r\r\n"
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \r (carriage return only)
+🖥️ DEBUG: VTE execute \n (newline)

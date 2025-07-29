@@ -337,7 +337,8 @@ impl TerminalApp {
 
         // Resize the terminal state
         {
-            let mut state = self.terminal_state.lock().unwrap();
+            let mut state: std::sync::MutexGuard<'_, TerminalState> =
+                self.terminal_state.lock().unwrap();
             let is_alt = state.is_alt_screen;
             state.resize(new_rows, new_cols);
 
@@ -393,11 +394,12 @@ impl eframe::App for TerminalApp {
                 .unwrap();
 
             // Terminal display with focus handling and proper scrolling
-            let terminal_response = egui::ScrollArea::vertical()
+            let mut scroll_area = egui::ScrollArea::vertical()
                 .id_salt("terminal_scroll") // Use id_salt for persistent state (corrected from id_source)
                 .stick_to_bottom(true)
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
+                .auto_shrink([false; 2]);
+                
+            let terminal_response = scroll_area.show(ui, |ui| {
                     // Calculate exact font metrics
                     let font_id = egui::FontId::new(11.0, egui::FontFamily::Monospace);
                     let line_height = ui.fonts(|f| f.row_height(&font_id));
@@ -406,9 +408,32 @@ impl eframe::App for TerminalApp {
 
                     // Calculate terminal content size
                     if let Ok(state) = self.terminal_state.lock() {
-                        let total_lines = state.scrollback.len() + state.screen.len();
-                        let content_height = total_lines as f32 * line_height;
+                        // 효율적인 렌더링: 복사 없이 직접 접근
+                        let total_lines = if state.is_alt_screen {
+                            state.alt_screen.len()
+                        } else {
+                            state.main_buffer.len()
+                        };
+                        
                         let content_width = state.cols as f32 * char_width;
+
+                        // 스크롤 영역 크기: 전체 히스토리 기준
+                        let available_screen_lines =
+                            (remaining_rect.height() / line_height).floor() as usize;
+
+                        // 스크롤 영역은 실제 콘텐츠 크기 기준
+                        let visible_content_lines = if state.is_alt_screen {
+                            // Alt screen: 화면 크기 고정
+                            state.rows
+                        } else {
+                            // Main screen: 실제 히스토리 크기만 사용
+                            total_lines
+                        };
+
+                        let content_height = visible_content_lines as f32 * line_height;
+
+                        println!("🎥 RENDER: total_lines={}, visible_content_lines={}, available_screen_lines={}, content_height={:.1}", 
+                                total_lines, visible_content_lines, available_screen_lines, content_height);
 
                         // Allocate exact space needed for the *entire* virtual terminal content
                         // This makes the scrollbar behave correctly.
@@ -451,18 +476,23 @@ impl eframe::App for TerminalApp {
                             .floor()
                             .max(0.0) as usize;
 
-                        // Combine scrollback and screen for rendering
-                        let full_buffer: Vec<_> =
-                            state.scrollback.iter().chain(state.screen.iter()).collect();
-
                         let last_visible_row = ((ui.clip_rect().bottom() - response.rect.top())
                             / line_height)
                             .ceil() as usize;
-                        let last_visible_row = last_visible_row.min(full_buffer.len());
+                        let last_visible_row = last_visible_row
+                            .min(visible_content_lines)
+                            .min(total_lines);
 
                         // First, draw only the *visible* terminal content
                         for row_idx in first_visible_row..last_visible_row {
-                            let row = &full_buffer[row_idx];
+                            if row_idx >= visible_content_lines || row_idx >= total_lines {
+                                break;
+                            }
+                            let row = if state.is_alt_screen {
+                                &state.alt_screen[row_idx]
+                            } else {
+                                &state.main_buffer[row_idx]
+                            };
                             let y = response.rect.top() + row_idx as f32 * line_height;
                             let mut col_offset = 0.0;
 
@@ -570,10 +600,13 @@ impl eframe::App for TerminalApp {
                         }
 
                         // Now draw cursor separately at correct position
-                        let cursor_screen_y = state.cursor_row as f32 * line_height;
-                        let cursor_y = response.rect.top()
-                            + (state.scrollback.len() as f32 * line_height)
-                            + cursor_screen_y;
+                        let cursor_absolute_row = if state.is_alt_screen {
+                            state.cursor_row
+                        } else {
+                            state.visible_start + state.cursor_row
+                        };
+                        let cursor_y =
+                            response.rect.top() + cursor_absolute_row as f32 * line_height;
 
                         // Only draw the cursor if it's within the visible area
                         if cursor_y >= ui.clip_rect().top()
@@ -581,10 +614,23 @@ impl eframe::App for TerminalApp {
                         {
                             // Calculate precise cursor X position by walking through the row
                             let mut cursor_x = response.rect.left();
-                            if state.cursor_row < state.screen.len() {
-                                for (col_idx, cell) in
-                                    state.screen[state.cursor_row].iter().enumerate()
-                                {
+
+                            let cursor_row_data = if state.is_alt_screen {
+                                if cursor_absolute_row < state.alt_screen.len() {
+                                    Some(&state.alt_screen[cursor_absolute_row])
+                                } else {
+                                    None
+                                }
+                            } else {
+                                if cursor_absolute_row < state.main_buffer.len() {
+                                    Some(&state.main_buffer[cursor_absolute_row])
+                                } else {
+                                    None
+                                }
+                            };
+
+                            if let Some(row) = cursor_row_data {
+                                for (col_idx, cell) in row.iter().enumerate() {
                                     if col_idx >= state.cursor_col {
                                         break;
                                     }

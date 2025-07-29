@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 
-pub const MAX_SCROLLBACK: usize = 1000;
+pub const MAX_HISTORY_LINES: usize = 1000;
 
 // ANSI 색상 정보를 저장하는 구조체
 #[derive(Clone, Debug, PartialEq)]
@@ -45,37 +45,51 @@ impl Default for TerminalCell {
     }
 }
 
-// Terminal state structure
+// Terminal state structure with unified buffer
 #[derive(Clone)]
 pub struct TerminalState {
+    // Unified buffer: all history + current screen in one VecDeque
+    pub main_buffer: VecDeque<Vec<TerminalCell>>,
+    pub visible_start: usize, // Start of currently visible area
+
+    // Legacy compatibility (will point to visible area of main_buffer)
     pub screen: Vec<Vec<TerminalCell>>,
     pub scrollback: VecDeque<Vec<TerminalCell>>,
-    pub cursor_row: usize,
-    pub cursor_col: usize,
-    pub rows: usize,
-    pub cols: usize,
-    pub current_color: AnsiColor, // 현재 색상 상태
 
-    pub arrow_key_pressed: bool, // Track if arrow key was recently pressed
-    pub arrow_key_time: Option<Instant>, // When arrow key was last pressed
-    // Alternative screen buffer support
-    pub main_screen: Vec<Vec<TerminalCell>>, // Main screen buffer
-    pub main_scrollback: VecDeque<Vec<TerminalCell>>, // Saved scrollback for main screen
-    pub alt_screen: Vec<Vec<TerminalCell>>,  // Alternative screen buffer
-    pub is_alt_screen: bool,                 // Currently using alternative screen
-    pub saved_cursor_main: (usize, usize),   // Saved cursor position for main screen
-    pub saved_cursor_alt: (usize, usize),    // Saved cursor position for alt screen
-    pub cursor_visible: bool,                // Is the cursor currently visible?
+    pub cursor_row: usize, // Relative to visible area
+    pub cursor_col: usize,
+    pub rows: usize, // Visible rows
+    pub cols: usize,
+    pub current_color: AnsiColor,
+
+    pub arrow_key_pressed: bool,
+    pub arrow_key_time: Option<Instant>,
+
+    // Alternative screen buffer (separate from main buffer)
+    pub alt_screen: Vec<Vec<TerminalCell>>,
+    pub is_alt_screen: bool,
+    pub saved_cursor_main: (usize, usize),
+    pub saved_cursor_alt: (usize, usize),
+    pub cursor_visible: bool,
 }
 
 impl TerminalState {
     pub fn new(rows: usize, cols: usize) -> Self {
+        let mut main_buffer = VecDeque::with_capacity(MAX_HISTORY_LINES + rows);
+
+        // Initialize with empty rows for the initial screen
+        for _ in 0..rows {
+            main_buffer.push_back(vec![TerminalCell::default(); cols]);
+        }
+
         let screen = vec![vec![TerminalCell::default(); cols]; rows];
-        let main_screen = vec![vec![TerminalCell::default(); cols]; rows];
         let alt_screen = vec![vec![TerminalCell::default(); cols]; rows];
+
         Self {
+            main_buffer,
+            visible_start: 0,
             screen,
-            scrollback: VecDeque::with_capacity(MAX_SCROLLBACK),
+            scrollback: VecDeque::new(), // Keep for compatibility, but won't be used
             cursor_row: 0,
             cursor_col: 0,
             rows,
@@ -83,8 +97,6 @@ impl TerminalState {
             current_color: AnsiColor::default(),
             arrow_key_pressed: false,
             arrow_key_time: None,
-            main_screen,
-            main_scrollback: VecDeque::new(),
             alt_screen,
             is_alt_screen: false,
             saved_cursor_main: (0, 0),
@@ -93,24 +105,48 @@ impl TerminalState {
         }
     }
 
-    pub fn clear_screen(&mut self) {
-        // Move all non-empty lines from the screen to the scrollback buffer, regardless of screen mode
-        for row in self.screen.iter().filter(|r| r.iter().any(|c| c.ch != ' ')) {
-            self.scrollback.push_back(row.clone());
-        }
-        // Trim scrollback if it exceeds the maximum size
-        while self.scrollback.len() > MAX_SCROLLBACK {
-            self.scrollback.pop_front();
-        }
-
-        // Clear all content and reset cursor to top-left
-        for row in &mut self.screen {
-            for cell in row {
-                *cell = TerminalCell::default();
+    // Update the legacy screen reference to point to visible area
+    fn update_screen_reference(&mut self) {
+        if self.is_alt_screen {
+            self.screen = self.alt_screen.clone();
+        } else {
+            // Point screen to the visible portion of main_buffer
+            self.screen.clear();
+            for i in 0..self.rows {
+                let buffer_index = self.visible_start + i;
+                if buffer_index < self.main_buffer.len() {
+                    self.screen.push(self.main_buffer[buffer_index].clone());
+                } else {
+                    self.screen.push(vec![TerminalCell::default(); self.cols]);
+                }
             }
         }
+    }
+
+    // Ensure we're always at the bottom when new content arrives
+    fn ensure_at_bottom(&mut self) {
+        if !self.is_alt_screen && self.main_buffer.len() >= self.rows {
+            self.visible_start = self.main_buffer.len() - self.rows;
+            self.update_screen_reference();
+        }
+    }
+
+    pub fn clear_screen(&mut self) {
+        // Completely clear main_buffer and reset everything
+        self.main_buffer.clear();
+
+        // Create a fresh screen with current size
+        for _ in 0..self.rows {
+            self.main_buffer
+                .push_back(vec![TerminalCell::default(); self.cols]);
+        }
+
+        self.visible_start = 0;
+        self.update_screen_reference();
         self.cursor_row = 0;
         self.cursor_col = 0;
+
+        println!("🧹 CLEARED: main_buffer completely emptied (Ctrl+L)");
     }
 
     pub fn resize(&mut self, new_rows: usize, new_cols: usize) {
@@ -121,30 +157,46 @@ impl TerminalState {
         let old_rows = self.rows;
         let old_cols = self.cols;
 
-        // 1. Resize main_screen, preserving content from the bottom
-        let mut new_main_screen = vec![vec![TerminalCell::default(); new_cols]; new_rows];
-        let rows_to_copy = std::cmp::min(new_rows, old_rows);
-        let cols_to_copy = std::cmp::min(new_cols, old_cols);
-        let old_screen_start = old_rows.saturating_sub(rows_to_copy);
-        let new_screen_start = new_rows.saturating_sub(rows_to_copy);
+        // 1. Track how many scrollback lines we've already used
 
-        for r in 0..rows_to_copy {
-            for c in 0..cols_to_copy {
-                new_main_screen[new_screen_start + r][c] =
-                    self.main_screen[old_screen_start + r][c].clone();
-            }
+        // RESIZE: Only adjust column width, NEVER change main_buffer row count
+        for row in &mut self.main_buffer {
+            row.resize(new_cols, TerminalCell::default());
         }
-        self.main_screen = new_main_screen;
+
+        // Adjust visible_start to keep cursor in view
+        if self.main_buffer.len() >= new_rows {
+            // Ensure cursor remains visible after resize
+            let cursor_absolute_row = self.visible_start + self.cursor_row;
+
+            // Keep cursor in the lower portion of the screen
+            if cursor_absolute_row + (new_rows / 4) < self.main_buffer.len() {
+                self.visible_start = self.main_buffer.len() - new_rows;
+            } else {
+                self.visible_start = cursor_absolute_row.saturating_sub(new_rows.saturating_sub(1));
+            }
+        } else {
+            self.visible_start = 0;
+        }
+
+        // Ensure cursor position is still valid
+        self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
+
+        println!(
+            "📐 RESIZE: {}x{} -> {}x{} (visible_start: {}, main_buffer.len: {})",
+            old_cols,
+            old_rows,
+            new_cols,
+            new_rows,
+            self.visible_start,
+            self.main_buffer.len()
+        );
 
         // 2. Recreate alt_screen (no need to preserve content)
         self.alt_screen = vec![vec![TerminalCell::default(); new_cols]; new_rows];
 
         // 3. Update the active screen based on the current screen mode
-        if self.is_alt_screen {
-            self.screen = self.alt_screen.clone();
-        } else {
-            self.screen = self.main_screen.clone();
-        }
+        self.update_screen_reference();
 
         // 4. Update dimensions
         self.rows = new_rows;
@@ -183,18 +235,26 @@ impl TerminalState {
         }
 
         if self.cursor_row < self.rows && self.cursor_col < self.cols {
-            // Place the character with current color
-            self.screen[self.cursor_row][self.cursor_col] = TerminalCell {
-                ch,
-                color: self.current_color.clone(),
+            let absolute_row = if self.is_alt_screen {
+                self.cursor_row
+            } else {
+                self.visible_start + self.cursor_row
             };
 
-            // For wide characters (width 2), mark the second cell as a continuation
-            if char_width == 2 && self.cursor_col + 1 < self.cols {
-                self.screen[self.cursor_row][self.cursor_col + 1] = TerminalCell {
-                    ch: '\u{0000}', // Null char as continuation marker
+            // Place the character with current color
+            if absolute_row < self.main_buffer.len() {
+                self.main_buffer[absolute_row][self.cursor_col] = TerminalCell {
+                    ch,
                     color: self.current_color.clone(),
                 };
+
+                // For wide characters (width 2), mark the second cell as a continuation
+                if char_width == 2 && self.cursor_col + 1 < self.cols {
+                    self.main_buffer[absolute_row][self.cursor_col + 1] = TerminalCell {
+                        ch: '\u{0000}', // Null char as continuation marker
+                        color: self.current_color.clone(),
+                    };
+                }
             }
 
             // Move cursor by the character width
@@ -214,14 +274,17 @@ impl TerminalState {
         self.cursor_row += 1;
         self.cursor_col = 0;
         if self.cursor_row >= self.rows {
-            // Scroll up: move the top line of the screen to the scrollback buffer
-            self.scrollback.push_back(self.screen.remove(0));
-            if self.scrollback.len() > MAX_SCROLLBACK {
-                self.scrollback.pop_front();
+            // Add new line at the bottom, maintain history limit
+            self.main_buffer
+                .push_back(vec![TerminalCell::default(); self.cols]);
+
+            // Trim if exceeds maximum history
+            while self.main_buffer.len() > MAX_HISTORY_LINES {
+                self.main_buffer.pop_front();
             }
 
-            self.screen.push(vec![TerminalCell::default(); self.cols]);
             self.cursor_row = self.rows - 1;
+            self.ensure_at_bottom();
         }
     }
 
@@ -250,20 +313,36 @@ impl TerminalState {
                 let mut delete_col = self.cursor_col - 1;
 
                 // If we're on a continuation marker (\u{0000}), move back to the actual character
-                while delete_col > 0 && self.screen[self.cursor_row][delete_col].ch == '\u{0000}' {
+                let absolute_row = if self.is_alt_screen {
+                    self.cursor_row
+                } else {
+                    self.visible_start + self.cursor_row
+                };
+
+                while delete_col > 0
+                    && absolute_row < self.main_buffer.len()
+                    && delete_col < self.main_buffer[absolute_row].len()
+                    && self.main_buffer[absolute_row][delete_col].ch == '\u{0000}'
+                {
                     delete_col -= 1;
                 }
 
                 // Double-check we're still in user input area after finding the actual character
-                if delete_col >= prompt_end {
+                if delete_col >= prompt_end
+                    && absolute_row < self.main_buffer.len()
+                    && delete_col < self.main_buffer[absolute_row].len()
+                {
                     // Get the character we're about to delete
-                    let ch_to_delete = self.screen[self.cursor_row][delete_col].ch;
+                    let ch_to_delete = self.main_buffer[absolute_row][delete_col].ch;
                     let char_width = ch_to_delete.width().unwrap_or(1);
 
                     // Clear the character and any continuation markers
                     for i in 0..char_width {
-                        if delete_col + i < self.cols {
-                            self.screen[self.cursor_row][delete_col + i] = TerminalCell::default();
+                        if delete_col + i < self.cols
+                            && delete_col + i < self.main_buffer[absolute_row].len()
+                        {
+                            self.main_buffer[absolute_row][delete_col + i] =
+                                TerminalCell::default();
                         }
                     }
 
@@ -308,18 +387,14 @@ impl TerminalState {
     // Switch to alternative screen buffer
     pub fn switch_to_alt_screen(&mut self) {
         if !self.is_alt_screen {
-            // Save current main screen state
-            self.main_screen = self.screen.clone();
-            self.main_scrollback = self.scrollback.clone();
+            // Save current cursor position for main screen
             self.saved_cursor_main = (self.cursor_row, self.cursor_col);
 
             // Switch to alternative screen (start with clean screen)
-            // Create a completely clean alt screen buffer
-            self.screen = self.alt_screen.clone();
-            self.scrollback.clear(); // Alt screen has no scrollback
+            self.is_alt_screen = true;
             self.cursor_row = 0;
             self.cursor_col = 0;
-            self.is_alt_screen = true;
+            self.update_screen_reference();
 
             println!("🔄 Switched to alternative screen buffer (clean screen)");
         }
@@ -328,13 +403,11 @@ impl TerminalState {
     // Switch back to main screen buffer
     pub fn switch_to_main_screen(&mut self) {
         if self.is_alt_screen {
-            // Don't save alt screen state - each app gets a clean alt screen
-            // Just restore main screen
-            self.screen = self.main_screen.clone();
-            self.scrollback = self.main_scrollback.clone();
+            // Restore main screen and cursor position
+            self.is_alt_screen = false;
             self.cursor_row = self.saved_cursor_main.0;
             self.cursor_col = self.saved_cursor_main.1;
-            self.is_alt_screen = false;
+            self.update_screen_reference();
 
             println!("🔄 Restored main screen buffer");
         }
