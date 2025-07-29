@@ -19,7 +19,7 @@ pub struct AnsiColor {
 impl Default for AnsiColor {
     fn default() -> Self {
         Self {
-            foreground: egui::Color32::from_rgb(203, 204, 205), // Terminal white
+            foreground: egui::Color32::WHITE, // Pure white for better contrast
             background: egui::Color32::TRANSPARENT,
             bold: false,
             italic: false,

@@ -226,14 +226,14 @@ impl TerminalApp {
         cmd.env("LC_CTYPE", "UTF-8");
         cmd.env("SHELL", "/bin/zsh");
         //P1: '\\x1b]0;', P2: '\\x07'
-        //cmd.env("PROMPT_EOL_MARK", "");
+        cmd.env("PROMPT_EOL_MARK", "%{%G%}");
         // Ensure consistent terminal behavior and fix visual glitches
         cmd.env("TERM_PROGRAM", "wterm");
         cmd.env("TERM_PROGRAM_VERSION", "1.0");
         // Disable the reverse-video '%' character at the end of partial lines
 
         // Prevent oh-my-zsh from trying to set the window title
-        //cmd.env("DISABLE_AUTO_TITLE", "true");
+        cmd.env("DISABLE_AUTO_TITLE", "true");
 
         let _child = pty_pair.slave.spawn_command(cmd)?;
 
@@ -494,12 +494,28 @@ impl eframe::App for TerminalApp {
                                 // Handle reverse video by swapping colors
                                 if cell.color.reverse {
                                     std::mem::swap(&mut final_fg, &mut final_bg);
-                                }
 
-                                // If the final background is transparent, make it the default black.
-                                // This is crucial for reverse video to be visible.
-                                if final_bg == egui::Color32::TRANSPARENT {
-                                    final_bg = egui::Color32::BLACK;
+                                    // Fix reverse video colors to ensure visibility
+                                    if final_bg == egui::Color32::TRANSPARENT {
+                                        final_bg = egui::Color32::BLACK;
+                                    }
+                                    if final_fg == egui::Color32::TRANSPARENT {
+                                        final_fg = egui::Color32::WHITE; // Ensure text is visible on background
+                                    }
+
+                                    // If colors are too similar after swap, force contrast
+                                    if final_fg == final_bg {
+                                        if final_bg == egui::Color32::BLACK {
+                                            final_fg = egui::Color32::WHITE;
+                                        } else {
+                                            final_fg = egui::Color32::BLACK;
+                                        }
+                                    }
+                                } else {
+                                    // Normal mode: ensure background transparency is handled
+                                    if final_bg == egui::Color32::TRANSPARENT {
+                                        final_bg = egui::Color32::BLACK;
+                                    }
                                 }
 
                                 // Draw background rectangle if it's not the default black
