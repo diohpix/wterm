@@ -19,6 +19,7 @@ pub struct TerminalApp {
     pty_master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     korean_state: KoreanInputState,
     last_tab_time: Option<Instant>, // Tab key debouncing
+    initial_focus_set: bool,        // Flag to track if initial focus has been set
 }
 
 impl TerminalApp {
@@ -275,6 +276,7 @@ impl TerminalApp {
             pty_master,
             korean_state: KoreanInputState::new(),
             last_tab_time: None,
+            initial_focus_set: false,
         })
     }
 
@@ -719,6 +721,13 @@ impl eframe::App for TerminalApp {
                 }
             });
 
+            // Set initial focus when app starts
+            if !self.initial_focus_set {
+                ui.memory_mut(|mem| mem.request_focus(terminal_response.inner.id));
+                self.initial_focus_set = true;
+                println!("🎯 Initial focus set to terminal");
+            }
+
             // Handle keyboard input when terminal has focus
             let has_focus = ui.memory(|mem| mem.has_focus(terminal_response.inner.id));
 
@@ -1136,11 +1145,11 @@ impl eframe::App for TerminalApp {
                 });
             }
 
-            // Show focus hint
+            // Show focus status
             if !ui.memory(|mem| mem.has_focus(terminal_response.inner.id)) {
-                ui.label("💡 터미널 영역을 클릭해서 포커스를 주세요 (Ctrl+L: 화면 클리어)");
+                ui.label("💡 터미널 영역을 클릭해서 포커스를 다시 주세요 (Ctrl+L: 화면 클리어)");
             } else {
-                ui.label("✅ 터미널 활성화됨");
+                ui.label("✅ 터미널 활성화됨 (Ctrl+L: 화면 클리어)");
             }
         });
     }
