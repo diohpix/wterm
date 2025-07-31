@@ -208,49 +208,39 @@ impl TerminalState {
             // So we move cursor to the end of content to prevent data loss
             // BUT only do this if there's actual meaningful content to protect
             if self.main_buffer.len() > 0 {
-                // Check if there's actually meaningful content in the buffer
-                let has_meaningful_content = self
-                    .main_buffer
-                    .iter()
-                    .any(|row| row.iter().any(|cell| cell.ch != ' ' && cell.ch != '\0'));
+                // SUPER OPTIMIZED: Only check the visible area for meaningful content
+                // This is much faster and logically correct - we only care about visible content for cursor positioning
+                let visible_end = (self.visible_start + new_rows).min(self.main_buffer.len());
 
-                if has_meaningful_content {
-                    let last_content_row = self.main_buffer.len() - 1;
-                    if last_content_row >= self.visible_start {
-                        let safe_cursor_row = last_content_row - self.visible_start;
-                        if safe_cursor_row < new_rows {
-                            // Find the actual last row with content
-                            let mut actual_last_content_row = None;
-                            for (i, row) in self.main_buffer.iter().enumerate().rev() {
-                                if row.iter().any(|cell| cell.ch != ' ' && cell.ch != '\0') {
-                                    actual_last_content_row = Some(i);
-                                    break;
+                let mut actual_last_content_row = None;
+                for i in (self.visible_start..visible_end).rev() {
+                    if self.main_buffer[i]
+                        .iter()
+                        .any(|cell| cell.ch != ' ' && cell.ch != '\0')
+                    {
+                        actual_last_content_row = Some(i);
+                        break;
+                    }
+                }
+
+                // If we found meaningful content, position cursor safely
+                if let Some(content_row) = actual_last_content_row {
+                    if content_row >= self.visible_start {
+                        let content_cursor_row = content_row - self.visible_start;
+                        if content_cursor_row < new_rows {
+                            self.cursor_row = content_cursor_row;
+                            // Move to end of line or find last non-space character
+                            let mut last_char_col = 0;
+                            for (i, cell) in self.main_buffer[content_row].iter().enumerate() {
+                                if cell.ch != ' ' && cell.ch != '\0' {
+                                    last_char_col = i + 1;
                                 }
                             }
-
-                            if let Some(content_row) = actual_last_content_row {
-                                if content_row >= self.visible_start {
-                                    let content_cursor_row = content_row - self.visible_start;
-                                    if content_cursor_row < new_rows {
-                                        self.cursor_row = content_cursor_row;
-                                        // Move to end of line or find last non-space character
-                                        let mut last_char_col = 0;
-                                        for (i, cell) in
-                                            self.main_buffer[content_row].iter().enumerate()
-                                        {
-                                            if cell.ch != ' ' && cell.ch != '\0' {
-                                                last_char_col = i + 1;
-                                            }
-                                        }
-                                        self.cursor_col =
-                                            last_char_col.min(new_cols.saturating_sub(1));
-                                    }
-                                }
-                            }
+                            self.cursor_col = last_char_col.min(new_cols.saturating_sub(1));
                         }
                     }
                 }
-                // If no meaningful content, keep cursor where it was (don't move it)
+                // If no meaningful content found in recent history, keep cursor where it was
             }
         } else {
             // For alt screen, just ensure bounds
