@@ -158,13 +158,14 @@ impl TerminalState {
             }
 
             // Adjust visible_start to keep content visible
-            println!("main_buffer.len(): {}", self.main_buffer.len());
+
             if self.main_buffer.len() >= new_rows {
+                println!("----- {}", self.main_buffer.len());
                 // Try to keep the cursor visible and show recent content
                 let cursor_absolute_row = self.visible_start + self.cursor_row;
 
                 // Keep most recent content visible (bottom-aligned approach)
-                if cursor_absolute_row + (new_rows / 4) < self.main_buffer.len() {
+                if cursor_absolute_row < self.main_buffer.len() {
                     self.visible_start = self.main_buffer.len() - new_rows;
                 } else {
                     self.visible_start =
@@ -246,12 +247,6 @@ impl TerminalState {
             // For alt screen, just ensure bounds
             self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
         }
-
-        // Update the active screen based on the current screen mode
-
-        // Update dimensions
-        self.rows = new_rows;
-        self.cols = new_cols;
 
         // Update saved cursor positions to stay within bounds
         self.saved_cursor_main.0 = self.saved_cursor_main.0.min(new_rows.saturating_sub(1));
