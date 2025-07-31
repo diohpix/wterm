@@ -419,13 +419,13 @@ impl eframe::App for TerminalApp {
 
                     let content_width = state.cols as f32 * char_width;
 
-                    // 스크롤 영역은 실제 콘텐츠 크기 기준
+                    // 화면은 항상 윈도우 크기에 맞춰서 표시
                     let visible_content_lines = if state.is_alt_screen {
                         // Alt screen: 화면 크기 고정
                         state.rows
                     } else {
-                        // Main screen: 실제 히스토리 크기만 사용
-                        total_lines
+                        // Main screen: 윈도우 크기에 맞춰 표시 (히스토리는 스크롤로 처리)
+                        state.rows.max(total_lines)
                     };
 
                     let content_height = visible_content_lines as f32 * line_height;
@@ -478,120 +478,137 @@ impl eframe::App for TerminalApp {
                     let last_visible_row = ((ui.clip_rect().bottom() - response.rect.top())
                         / line_height)
                         .ceil() as usize;
-                    let last_visible_row =
-                        last_visible_row.min(visible_content_lines).min(total_lines);
+                    let last_visible_row = last_visible_row.min(visible_content_lines);
 
                     // First, draw only the *visible* terminal content
                     for row_idx in first_visible_row..last_visible_row {
-                        if row_idx >= visible_content_lines || row_idx >= total_lines {
+                        if row_idx >= visible_content_lines {
                             break;
                         }
-                        let row = if state.is_alt_screen {
-                            &state.alt_screen[row_idx]
+
+                        // Get row data if it exists
+                        let row_data = if state.is_alt_screen {
+                            if row_idx < state.alt_screen.len() {
+                                Some(&state.alt_screen[row_idx])
+                            } else {
+                                None // Empty row
+                            }
                         } else {
-                            &state.main_buffer[row_idx]
+                            if row_idx < state.main_buffer.len() {
+                                Some(&state.main_buffer[row_idx])
+                            } else {
+                                None // Empty row
+                            }
                         };
                         let y = response.rect.top() + row_idx as f32 * line_height;
-                        let mut col_offset = 0.0;
 
-                        for (_col_idx, cell) in row.iter().enumerate() {
-                            // Skip continuation markers for wide characters
-                            if cell.ch == '\u{0000}' {
-                                continue;
-                            }
+                        // Skip rendering if this is an empty row (beyond actual data)
+                        if let Some(row) = row_data {
+                            let mut col_offset = 0.0;
 
-                            // For monospace font, all characters should have same width except for wide chars
-                            let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
-                                2 // Keep wide characters (like Korean) as 2 units
-                            } else {
-                                1 // All other characters (including space) are 1 unit
-                            };
-                            let display_width = char_display_width as f32 * char_width;
-
-                            let x = response.rect.left() + col_offset;
-                            let pos = egui::Pos2::new(x, y);
-                            let cell_rect = egui::Rect::from_min_size(
-                                pos,
-                                egui::Vec2::new(display_width, line_height),
-                            );
-
-                            // Establish effective foreground and background colors for rendering
-                            let mut final_fg = cell.color.foreground;
-                            let mut final_bg = cell.color.background;
-
-                            // Handle reverse video by swapping colors
-                            if cell.color.reverse {
-                                std::mem::swap(&mut final_fg, &mut final_bg);
-
-                                // Fix reverse video colors to ensure visibility
-                                if final_bg == egui::Color32::TRANSPARENT {
-                                    final_bg = egui::Color32::BLACK;
-                                }
-                                if final_fg == egui::Color32::TRANSPARENT {
-                                    final_fg = egui::Color32::WHITE; // Ensure text is visible on background
+                            for (_col_idx, cell) in row.iter().enumerate() {
+                                // Skip continuation markers for wide characters
+                                if cell.ch == '\u{0000}' {
+                                    continue;
                                 }
 
-                                // If colors are too similar after swap, force contrast
-                                if final_fg == final_bg {
-                                    if final_bg == egui::Color32::BLACK {
-                                        final_fg = egui::Color32::WHITE;
-                                    } else {
-                                        final_fg = egui::Color32::BLACK;
+                                // For monospace font, all characters should have same width except for wide chars
+                                let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
+                                    2 // Keep wide characters (like Korean) as 2 units
+                                } else {
+                                    1 // All other characters (including space) are 1 unit
+                                };
+                                let display_width = char_display_width as f32 * char_width;
+
+                                let x = response.rect.left() + col_offset;
+                                let pos = egui::Pos2::new(x, y);
+                                let cell_rect = egui::Rect::from_min_size(
+                                    pos,
+                                    egui::Vec2::new(display_width, line_height),
+                                );
+
+                                // Establish effective foreground and background colors for rendering
+                                let mut final_fg = cell.color.foreground;
+                                let mut final_bg = cell.color.background;
+
+                                // Handle reverse video by swapping colors
+                                if cell.color.reverse {
+                                    std::mem::swap(&mut final_fg, &mut final_bg);
+
+                                    // Fix reverse video colors to ensure visibility
+                                    if final_bg == egui::Color32::TRANSPARENT {
+                                        final_bg = egui::Color32::BLACK;
+                                    }
+                                    if final_fg == egui::Color32::TRANSPARENT {
+                                        final_fg = egui::Color32::WHITE; // Ensure text is visible on background
+                                    }
+
+                                    // If colors are too similar after swap, force contrast
+                                    if final_fg == final_bg {
+                                        if final_bg == egui::Color32::BLACK {
+                                            final_fg = egui::Color32::WHITE;
+                                        } else {
+                                            final_fg = egui::Color32::BLACK;
+                                        }
+                                    }
+                                } else {
+                                    // Normal mode: ensure background transparency is handled
+                                    if final_bg == egui::Color32::TRANSPARENT {
+                                        final_bg = egui::Color32::BLACK;
                                     }
                                 }
-                            } else {
-                                // Normal mode: ensure background transparency is handled
-                                if final_bg == egui::Color32::TRANSPARENT {
-                                    final_bg = egui::Color32::BLACK;
-                                }
-                            }
 
-                            // Draw background rectangle if it's not the default black
-                            if final_bg != egui::Color32::BLACK {
-                                painter.rect_filled(cell_rect, egui::CornerRadius::ZERO, final_bg);
-                            }
-
-                            // Render character if it's not a space on a default background
-                            if cell.ch != ' ' || final_bg != egui::Color32::BLACK {
-                                let mut text_color = final_fg;
-
-                                // Apply bold effect by making color brighter
-                                if cell.color.bold {
-                                    let [r, g, b, a] = text_color.to_array();
-                                    text_color = egui::Color32::from_rgba_unmultiplied(
-                                        (r as f32 * 1.3).min(255.0) as u8,
-                                        (g as f32 * 1.3).min(255.0) as u8,
-                                        (b as f32 * 1.3).min(255.0) as u8,
-                                        a,
+                                // Draw background rectangle if it's not the default black
+                                if final_bg != egui::Color32::BLACK {
+                                    painter.rect_filled(
+                                        cell_rect,
+                                        egui::CornerRadius::ZERO,
+                                        final_bg,
                                     );
                                 }
 
-                                if cell.ch != ' ' {
-                                    painter.text(
-                                        pos,
-                                        egui::Align2::LEFT_TOP,
-                                        cell.ch,
-                                        font_id.clone(),
-                                        text_color,
-                                    );
+                                // Render character if it's not a space on a default background
+                                if cell.ch != ' ' || final_bg != egui::Color32::BLACK {
+                                    let mut text_color = final_fg;
+
+                                    // Apply bold effect by making color brighter
+                                    if cell.color.bold {
+                                        let [r, g, b, a] = text_color.to_array();
+                                        text_color = egui::Color32::from_rgba_unmultiplied(
+                                            (r as f32 * 1.3).min(255.0) as u8,
+                                            (g as f32 * 1.3).min(255.0) as u8,
+                                            (b as f32 * 1.3).min(255.0) as u8,
+                                            a,
+                                        );
+                                    }
+
+                                    if cell.ch != ' ' {
+                                        painter.text(
+                                            pos,
+                                            egui::Align2::LEFT_TOP,
+                                            cell.ch,
+                                            font_id.clone(),
+                                            text_color,
+                                        );
+                                    }
+
+                                    // Draw underline if enabled
+                                    if cell.color.underline {
+                                        let underline_y = y + line_height - 1.0;
+                                        painter.line_segment(
+                                            [
+                                                egui::Pos2::new(x, underline_y),
+                                                egui::Pos2::new(x + display_width, underline_y),
+                                            ],
+                                            egui::Stroke::new(1.0, text_color),
+                                        );
+                                    }
                                 }
 
-                                // Draw underline if enabled
-                                if cell.color.underline {
-                                    let underline_y = y + line_height - 1.0;
-                                    painter.line_segment(
-                                        [
-                                            egui::Pos2::new(x, underline_y),
-                                            egui::Pos2::new(x + display_width, underline_y),
-                                        ],
-                                        egui::Stroke::new(1.0, text_color),
-                                    );
-                                }
+                                col_offset += display_width;
                             }
-
-                            col_offset += display_width;
-                        }
-                    }
+                        } // end of if let Some(row)
+                    } // end of for row_idx
 
                     // Now draw cursor separately at correct position
                     let cursor_absolute_row = if state.is_alt_screen {

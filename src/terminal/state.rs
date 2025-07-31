@@ -73,10 +73,8 @@ impl TerminalState {
     pub fn new(rows: usize, cols: usize) -> Self {
         let mut main_buffer = VecDeque::with_capacity(MAX_HISTORY_LINES + rows);
 
-        // Initialize with empty rows for the initial screen
-        for _ in 0..rows {
-            main_buffer.push_back(vec![TerminalCell::default(); cols]);
-        }
+        // Start with just one empty row - more will be added as needed
+        main_buffer.push_back(vec![TerminalCell::default(); cols]);
 
         let _screen = vec![vec![TerminalCell::default(); cols]; rows];
         let alt_screen = vec![vec![TerminalCell::default(); cols]; rows];
@@ -99,8 +97,6 @@ impl TerminalState {
         }
     }
 
-    
-
     // Ensure we're always at the bottom when new content arrives
     fn ensure_at_bottom(&mut self) {
         if !self.is_alt_screen && self.main_buffer.len() >= self.rows {
@@ -112,11 +108,9 @@ impl TerminalState {
         // Completely clear main_buffer and reset everything
         self.main_buffer.clear();
 
-        // Create a fresh screen with current size
-        for _ in 0..self.rows {
-            self.main_buffer
-                .push_back(vec![TerminalCell::default(); self.cols]);
-        }
+        // Start with just one empty row - more will be added as needed
+        self.main_buffer
+            .push_back(vec![TerminalCell::default(); self.cols]);
 
         self.visible_start = 0;
         self.cursor_row = 0;
@@ -130,40 +124,18 @@ impl TerminalState {
             return;
         }
 
-        let old_rows = self.rows;
+        let _old_rows = self.rows;
         let old_cols = self.cols;
 
-        // Calculate content before resize for debugging
-        let content_before = if self.is_alt_screen {
-            self.alt_screen
-                .iter()
-                .flatten()
-                .filter(|cell| cell.ch != ' ' && cell.ch != '\0')
-                .count()
-        } else {
-            self.main_buffer
-                .iter()
-                .flatten()
-                .filter(|cell| cell.ch != ' ' && cell.ch != '\0')
-                .count()
-        };
-
-        println!(
-            "📊 Content before resize: {} chars, alt_screen: {}",
-            content_before, self.is_alt_screen
-        );
+        self.rows = new_rows;
+        self.cols = new_cols;
 
         if self.is_alt_screen {
             // For alt screen, just recreate with new dimensions
             self.alt_screen = vec![vec![TerminalCell::default(); new_cols]; new_rows];
         } else {
             // For main screen, preserve content during resize
-
-            // First, ensure we have enough rows in main_buffer to accommodate new size
-            while self.main_buffer.len() < new_rows {
-                self.main_buffer
-                    .push_back(vec![TerminalCell::default(); old_cols]);
-            }
+            // Note: We no longer pre-allocate rows - they'll be added as needed
 
             // Handle column resizing more carefully to preserve content
             if new_cols != old_cols {
@@ -186,6 +158,7 @@ impl TerminalState {
             }
 
             // Adjust visible_start to keep content visible
+            println!("main_buffer.len(): {}", self.main_buffer.len());
             if self.main_buffer.len() >= new_rows {
                 // Try to keep the cursor visible and show recent content
                 let cursor_absolute_row = self.visible_start + self.cursor_row;
@@ -205,6 +178,7 @@ impl TerminalState {
             } else {
                 self.visible_start = 0;
             }
+            println!("visible_start: {}", self.visible_start);
         }
 
         // Calculate current cursor absolute position before adjusting visible_start
@@ -283,20 +257,6 @@ impl TerminalState {
             self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
         }
 
-        println!(
-            "📐 RESIZE: {}x{} -> {}x{} (visible_start: {}, main_buffer.len: {}, cursor: {}:{} -> {}:{})",
-            old_cols,
-            old_rows,
-            new_cols,
-            new_rows,
-            self.visible_start,
-            self.main_buffer.len(),
-            old_cursor_absolute_row,
-            self.cursor_col,
-            if self.is_alt_screen { self.cursor_row } else { self.visible_start + self.cursor_row },
-            self.cursor_col
-        );
-
         // Update the active screen based on the current screen mode
 
         // Update dimensions
@@ -311,21 +271,6 @@ impl TerminalState {
         self.saved_cursor_alt = (0, 0);
 
         // Calculate content after resize for debugging
-        let content_after = if self.is_alt_screen {
-            self.alt_screen
-                .iter()
-                .flatten()
-                .filter(|cell| cell.ch != ' ' && cell.ch != '\0')
-                .count()
-        } else {
-            self.main_buffer
-                .iter()
-                .flatten()
-                .filter(|cell| cell.ch != ' ' && cell.ch != '\0')
-                .count()
-        };
-
-        println!("📊 Content after resize: {} chars", content_after);
     }
 
     pub fn put_char(&mut self, ch: char) {
@@ -347,20 +292,24 @@ impl TerminalState {
                 self.visible_start + self.cursor_row
             };
 
+            // Ensure we have enough rows in main_buffer
+            while absolute_row >= self.main_buffer.len() {
+                self.main_buffer
+                    .push_back(vec![TerminalCell::default(); self.cols]);
+            }
+
             // Place the character with current color
-            if absolute_row < self.main_buffer.len() {
-                self.main_buffer[absolute_row][self.cursor_col] = TerminalCell {
-                    ch,
+            self.main_buffer[absolute_row][self.cursor_col] = TerminalCell {
+                ch,
+                color: self.current_color.clone(),
+            };
+
+            // For wide characters (width 2), mark the second cell as a continuation
+            if char_width == 2 && self.cursor_col + 1 < self.cols {
+                self.main_buffer[absolute_row][self.cursor_col + 1] = TerminalCell {
+                    ch: '\u{0000}', // Null char as continuation marker
                     color: self.current_color.clone(),
                 };
-
-                // For wide characters (width 2), mark the second cell as a continuation
-                if char_width == 2 && self.cursor_col + 1 < self.cols {
-                    self.main_buffer[absolute_row][self.cursor_col + 1] = TerminalCell {
-                        ch: '\u{0000}', // Null char as continuation marker
-                        color: self.current_color.clone(),
-                    };
-                }
             }
 
             // Move cursor by the character width
