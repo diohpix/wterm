@@ -97,12 +97,8 @@ impl TerminalState {
         }
     }
 
-    // Ensure we're always at the bottom when new content arrives
-    fn ensure_at_bottom(&mut self) {
-        if !self.is_alt_screen && self.main_buffer.len() >= self.rows {
-            self.visible_start = self.main_buffer.len() - self.rows;
-        }
-    }
+    // Note: ensure_at_bottom removed to prevent interference with resize logic
+    // visible_start is now managed entirely by resize() method
 
     pub fn clear_screen(&mut self) {
         // Completely clear main_buffer and reset everything
@@ -124,9 +120,14 @@ impl TerminalState {
             return;
         }
 
-        let _old_rows = self.rows;
-        let old_cols = self.cols;
+        // Calculate current cursor absolute position BEFORE changing anything
+        let old_cursor_absolute_row = if self.is_alt_screen {
+            self.cursor_row // Alt screen cursor is already absolute
+        } else {
+            self.visible_start + self.cursor_row // Main screen cursor is relative to visible_start
+        };
 
+        let old_cols = self.cols;
         self.rows = new_rows;
         self.cols = new_cols;
 
@@ -135,8 +136,6 @@ impl TerminalState {
             self.alt_screen = vec![vec![TerminalCell::default(); new_cols]; new_rows];
         } else {
             // For main screen, preserve content during resize
-            // Note: We no longer pre-allocate rows - they'll be added as needed
-
             // Handle column resizing more carefully to preserve content
             if new_cols != old_cols {
                 for row in &mut self.main_buffer {
@@ -145,10 +144,7 @@ impl TerminalState {
                         row.resize(new_cols, TerminalCell::default());
                     } else {
                         // Shrinking: preserve as much content as possible
-                        // Instead of truncating, we could wrap content to next lines,
-                        // but for simplicity, let's preserve what fits
                         if row.len() > new_cols {
-                            // Simply truncate to new_cols to avoid complexity
                             row.truncate(new_cols);
                         }
                         // Ensure the row has exactly new_cols elements
@@ -157,37 +153,13 @@ impl TerminalState {
                 }
             }
 
-            // Adjust visible_start to keep content visible
-
+            // Simplify visible_start calculation - just stay at the bottom
             if self.main_buffer.len() >= new_rows {
-                println!("----- {}", self.main_buffer.len());
-                // Try to keep the cursor visible and show recent content
-                let cursor_absolute_row = self.visible_start + self.cursor_row;
-
-                // Keep most recent content visible (bottom-aligned approach)
-                if cursor_absolute_row < self.main_buffer.len() {
-                    self.visible_start = self.main_buffer.len() - new_rows;
-                } else {
-                    self.visible_start =
-                        cursor_absolute_row.saturating_sub(new_rows.saturating_sub(1));
-                }
-
-                // Ensure visible_start doesn't exceed buffer bounds
-                self.visible_start = self
-                    .visible_start
-                    .min(self.main_buffer.len().saturating_sub(new_rows));
+                self.visible_start = self.main_buffer.len() - new_rows;
             } else {
                 self.visible_start = 0;
             }
-            println!("visible_start: {}", self.visible_start);
         }
-
-        // Calculate current cursor absolute position before adjusting visible_start
-        let old_cursor_absolute_row = if self.is_alt_screen {
-            self.cursor_row // Alt screen cursor is already absolute
-        } else {
-            self.visible_start + self.cursor_row // Main screen cursor is relative to visible_start
-        };
 
         // Ensure cursor position is still valid after resize
         self.cursor_col = self.cursor_col.min(new_cols.saturating_sub(1));
@@ -203,46 +175,6 @@ impl TerminalState {
             }
             // Ensure cursor_row is within bounds
             self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
-
-            // IMPORTANT: Move cursor to a safe position to protect existing content
-            // When shell receives SIGWINCH, it will clear from cursor position to end
-            // So we move cursor to the end of content to prevent data loss
-            // BUT only do this if there's actual meaningful content to protect
-            if self.main_buffer.len() > 0 {
-                // SUPER OPTIMIZED: Only check the visible area for meaningful content
-                // This is much faster and logically correct - we only care about visible content for cursor positioning
-                let visible_end = (self.visible_start + new_rows).min(self.main_buffer.len());
-
-                let mut actual_last_content_row = None;
-                for i in (self.visible_start..visible_end).rev() {
-                    if self.main_buffer[i]
-                        .iter()
-                        .any(|cell| cell.ch != ' ' && cell.ch != '\0')
-                    {
-                        actual_last_content_row = Some(i);
-                        break;
-                    }
-                }
-
-                // If we found meaningful content, position cursor safely
-                if let Some(content_row) = actual_last_content_row {
-                    if content_row >= self.visible_start {
-                        let content_cursor_row = content_row - self.visible_start;
-                        if content_cursor_row < new_rows {
-                            self.cursor_row = content_cursor_row;
-                            // Move to end of line or find last non-space character
-                            let mut last_char_col = 0;
-                            for (i, cell) in self.main_buffer[content_row].iter().enumerate() {
-                                if cell.ch != ' ' && cell.ch != '\0' {
-                                    last_char_col = i + 1;
-                                }
-                            }
-                            self.cursor_col = last_char_col.min(new_cols.saturating_sub(1));
-                        }
-                    }
-                }
-                // If no meaningful content found in recent history, keep cursor where it was
-            }
         } else {
             // For alt screen, just ensure bounds
             self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
@@ -254,8 +186,6 @@ impl TerminalState {
 
         // Alt cursor can always be reset to top-left for the clean buffer
         self.saved_cursor_alt = (0, 0);
-
-        // Calculate content after resize for debugging
     }
 
     pub fn put_char(&mut self, ch: char) {
@@ -321,10 +251,15 @@ impl TerminalState {
             // Trim if exceeds maximum history
             while self.main_buffer.len() > MAX_HISTORY_LINES {
                 self.main_buffer.pop_front();
+                // Adjust visible_start when removing from front
+                if self.visible_start > 0 {
+                    self.visible_start -= 1;
+                }
             }
 
             self.cursor_row = self.rows - 1;
-            self.ensure_at_bottom();
+            // Don't call ensure_at_bottom() here as it can interfere with resize
+            // The visible_start is already managed by resize() method
         }
     }
 

@@ -411,22 +411,11 @@ impl eframe::App for TerminalApp {
                 // Calculate terminal content size
                 if let Ok(state) = self.terminal_state.lock() {
                     // 효율적인 렌더링: 복사 없이 직접 접근
-                    let total_lines = if state.is_alt_screen {
-                        state.alt_screen.len()
-                    } else {
-                        state.main_buffer.len()
-                    };
 
                     let content_width = state.cols as f32 * char_width;
 
                     // 화면은 항상 윈도우 크기에 맞춰서 표시
-                    let visible_content_lines = if state.is_alt_screen {
-                        // Alt screen: 화면 크기 고정
-                        state.rows
-                    } else {
-                        // Main screen: 윈도우 크기에 맞춰 표시 (히스토리는 스크롤로 처리)
-                        state.rows.max(total_lines)
-                    };
+                    let visible_content_lines = state.rows;
 
                     let content_height = visible_content_lines as f32 * line_height;
 
@@ -494,8 +483,9 @@ impl eframe::App for TerminalApp {
                                 None // Empty row
                             }
                         } else {
-                            if row_idx < state.main_buffer.len() {
-                                Some(&state.main_buffer[row_idx])
+                            let buffer_row_idx = state.visible_start + row_idx;
+                            if buffer_row_idx < state.main_buffer.len() {
+                                Some(&state.main_buffer[buffer_row_idx])
                             } else {
                                 None // Empty row
                             }
@@ -611,12 +601,7 @@ impl eframe::App for TerminalApp {
                     } // end of for row_idx
 
                     // Now draw cursor separately at correct position
-                    let cursor_absolute_row = if state.is_alt_screen {
-                        state.cursor_row
-                    } else {
-                        state.visible_start + state.cursor_row
-                    };
-                    let cursor_y = response.rect.top() + cursor_absolute_row as f32 * line_height;
+                    let cursor_y = response.rect.top() + state.cursor_row as f32 * line_height;
 
                     // Only draw the cursor if it's within the visible area
                     if cursor_y >= ui.clip_rect().top()
@@ -626,14 +611,15 @@ impl eframe::App for TerminalApp {
                         let mut cursor_x = response.rect.left();
 
                         let cursor_row_data = if state.is_alt_screen {
-                            if cursor_absolute_row < state.alt_screen.len() {
-                                Some(&state.alt_screen[cursor_absolute_row])
+                            if state.cursor_row < state.alt_screen.len() {
+                                Some(&state.alt_screen[state.cursor_row])
                             } else {
                                 None
                             }
                         } else {
-                            if cursor_absolute_row < state.main_buffer.len() {
-                                Some(&state.main_buffer[cursor_absolute_row])
+                            let cursor_buffer_row = state.visible_start + state.cursor_row;
+                            if cursor_buffer_row < state.main_buffer.len() {
+                                Some(&state.main_buffer[cursor_buffer_row])
                             } else {
                                 None
                             }

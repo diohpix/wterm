@@ -119,26 +119,85 @@ impl Perform for TerminalPerformer {
                     // ED (Erase in Display)
                     let param = params.iter().next().unwrap_or(&[0])[0];
                     match param {
-                        0 => { // Clear from cursor to end of display
+                        0 => {
+                            // Clear from cursor to end of display (screen-relative)
                             if state.is_alt_screen {
-                                for row_idx in state.cursor_row..state.rows {
-                                    let start_col = if row_idx == state.cursor_row { state.cursor_col } else { 0 };
-                                    if row_idx < state.alt_screen.len() {
+                                for screen_row in state.cursor_row..state.rows {
+                                    let start_col = if screen_row == state.cursor_row {
+                                        state.cursor_col
+                                    } else {
+                                        0
+                                    };
+                                    if screen_row < state.alt_screen.len() {
                                         for col_idx in start_col..state.cols {
-                                            if col_idx < state.alt_screen[row_idx].len() {
-                                                state.alt_screen[row_idx][col_idx] = TerminalCell::default();
+                                            if col_idx < state.alt_screen[screen_row].len() {
+                                                state.alt_screen[screen_row][col_idx] =
+                                                    TerminalCell::default();
                                             }
                                         }
                                     }
                                 }
                             } else {
-                                let absolute_cursor_row = state.visible_start + state.cursor_row;
-                                for row_idx in absolute_cursor_row..(state.visible_start + state.rows) {
-                                    if row_idx < state.main_buffer.len() {
-                                        let start_col = if row_idx == absolute_cursor_row { state.cursor_col } else { 0 };
-                                        for col_idx in start_col..state.cols {
-                                            if col_idx < state.main_buffer[row_idx].len() {
-                                                state.main_buffer[row_idx][col_idx] = TerminalCell::default();
+                                // Clear from cursor to end of visible screen
+                                let cols = state.cols; // Extract to avoid borrowing issues
+
+                                for screen_row in state.cursor_row..state.rows {
+                                    let buffer_row = state.visible_start + screen_row;
+
+                                    // Only clear if the row actually exists - don't create new rows
+                                    if buffer_row >= state.main_buffer.len() {
+                                        break;
+                                    }
+
+                                    let start_col = if screen_row == state.cursor_row {
+                                        state.cursor_col
+                                    } else {
+                                        0
+                                    };
+
+                                    // Clear the existing row
+                                    for col_idx in start_col..cols {
+                                        if col_idx < state.main_buffer[buffer_row].len() {
+                                            state.main_buffer[buffer_row][col_idx] =
+                                                TerminalCell::default();
+                                        }
+                                    }
+                                }
+                            }
+                            state_changed = true;
+                        }
+                        1 => {
+                            // Clear from start of display to cursor (screen-relative)
+                            if state.is_alt_screen {
+                                for screen_row in 0..=state.cursor_row {
+                                    let end_col = if screen_row == state.cursor_row {
+                                        state.cursor_col + 1
+                                    } else {
+                                        state.cols
+                                    };
+                                    if screen_row < state.alt_screen.len() {
+                                        for col_idx in 0..end_col {
+                                            if col_idx < state.alt_screen[screen_row].len() {
+                                                state.alt_screen[screen_row][col_idx] =
+                                                    TerminalCell::default();
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Clear from start of visible screen to cursor
+                                for screen_row in 0..=state.cursor_row {
+                                    let buffer_row = state.visible_start + screen_row;
+                                    let end_col = if screen_row == state.cursor_row {
+                                        state.cursor_col + 1
+                                    } else {
+                                        state.cols
+                                    };
+                                    if buffer_row < state.main_buffer.len() {
+                                        for col_idx in 0..end_col {
+                                            if col_idx < state.main_buffer[buffer_row].len() {
+                                                state.main_buffer[buffer_row][col_idx] =
+                                                    TerminalCell::default();
                                             }
                                         }
                                     }
@@ -146,49 +205,26 @@ impl Perform for TerminalPerformer {
                             }
                             state_changed = true;
                         }
-                        1 => { // Clear from start of display to cursor
-                            if state.is_alt_screen {
-                                for row_idx in 0..=state.cursor_row {
-                                    let end_col = if row_idx == state.cursor_row { state.cursor_col + 1 } else { state.cols };
-                                    if row_idx < state.alt_screen.len() {
-                                        for col_idx in 0..end_col {
-                                            if col_idx < state.alt_screen[row_idx].len() {
-                                                state.alt_screen[row_idx][col_idx] = TerminalCell::default();
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                let absolute_cursor_row = state.visible_start + state.cursor_row;
-                                for row_idx in state.visible_start..=absolute_cursor_row {
-                                    if row_idx < state.main_buffer.len() {
-                                        let end_col = if row_idx == absolute_cursor_row { state.cursor_col + 1 } else { state.cols };
-                                        for col_idx in 0..end_col {
-                                            if col_idx < state.main_buffer[row_idx].len() {
-                                                state.main_buffer[row_idx][col_idx] = TerminalCell::default();
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            state_changed = true;
-                        }
-                        2 => { // Clear entire display and move cursor to top-left
+                        2 => {
+                            // Clear entire display and move cursor to top-left (screen-relative)
                             if state.is_alt_screen {
                                 for row in state.alt_screen.iter_mut() {
                                     row.fill(TerminalCell::default());
                                 }
                             } else {
-                                for row_idx in state.visible_start..(state.visible_start + state.rows) {
-                                    if row_idx < state.main_buffer.len() {
-                                        state.main_buffer[row_idx].fill(TerminalCell::default());
+                                // Clear entire visible screen
+                                for screen_row in 0..state.rows {
+                                    let buffer_row = state.visible_start + screen_row;
+                                    if buffer_row < state.main_buffer.len() {
+                                        state.main_buffer[buffer_row].fill(TerminalCell::default());
                                     }
                                 }
                             }
                             state.move_cursor_to(0, 0);
                             state_changed = true;
                         }
-                        3 => { // Clear display and scrollback
+                        3 => {
+                            // Clear display and scrollback
                             if state.is_alt_screen {
                                 for row in state.alt_screen.iter_mut() {
                                     row.fill(TerminalCell::default());
@@ -197,7 +233,9 @@ impl Perform for TerminalPerformer {
                                 state.main_buffer.clear();
                                 let cols = state.cols;
                                 for _ in 0..state.rows {
-                                    state.main_buffer.push_back(vec![TerminalCell::default(); cols]);
+                                    state
+                                        .main_buffer
+                                        .push_back(vec![TerminalCell::default(); cols]);
                                 }
                                 state.visible_start = 0;
                             }
@@ -208,41 +246,52 @@ impl Perform for TerminalPerformer {
                     }
                 }
                 'K' => {
-                    // EL (Erase in Line)
+                    // EL (Erase in Line) - screen-relative
                     let param = params.iter().next().unwrap_or(&[0])[0];
-                    
-                    let row_idx = if state.is_alt_screen {
-                        state.cursor_row
+
+                    let (cursor_col, cols, cursor_row, is_alt_screen, visible_start) = (
+                        state.cursor_col,
+                        state.cols,
+                        state.cursor_row,
+                        state.is_alt_screen,
+                        state.visible_start,
+                    );
+
+                    let line = if is_alt_screen {
+                        if cursor_row < state.alt_screen.len() {
+                            Some(&mut state.alt_screen[cursor_row])
+                        } else {
+                            None
+                        }
                     } else {
-                        state.visible_start + state.cursor_row
+                        let buffer_row = visible_start + cursor_row;
+                        if buffer_row < state.main_buffer.len() {
+                            Some(&mut state.main_buffer[buffer_row])
+                        } else {
+                            None
+                        }
                     };
 
-                    let buffer_len = if state.is_alt_screen { state.alt_screen.len() } else { state.main_buffer.len() };
-
-                    if row_idx < buffer_len {
-                        let (cursor_col, cols) = (state.cursor_col, state.cols);
-                        let line = if state.is_alt_screen {
-                            &mut state.alt_screen[row_idx]
-                        } else {
-                            &mut state.main_buffer[row_idx]
-                        };
-
+                    if let Some(line) = line {
                         match param {
-                            0 => { // Clear from cursor to end of line
+                            0 => {
+                                // Clear from cursor to end of line
                                 for col in cursor_col..cols {
                                     if col < line.len() {
                                         line[col] = TerminalCell::default();
                                     }
                                 }
                             }
-                            1 => { // Clear from start of line to cursor
-                                for col in 0..=cursor_col {
+                            1 => {
+                                // Clear from start of line to cursor (inclusive)
+                                for col in 0..=cursor_col.min(cols.saturating_sub(1)) {
                                     if col < line.len() {
                                         line[col] = TerminalCell::default();
                                     }
                                 }
                             }
-                            2 => { // Clear entire line
+                            2 => {
+                                // Clear entire line
                                 line.fill(TerminalCell::default());
                             }
                             _ => {}
@@ -253,6 +302,7 @@ impl Perform for TerminalPerformer {
                 'A' => {
                     // CUU (Cursor Up) - ALWAYS ALLOW cursor movement
                     let count = params.iter().next().unwrap_or(&[1])[0] as usize;
+                    let count = if count == 0 { 1 } else { count }; // ANSI standard: 0 means 1
                     state.cursor_row = state.cursor_row.saturating_sub(count);
                     state.set_arrow_key_protection();
                     state_changed = true;
@@ -504,7 +554,11 @@ impl Perform for TerminalPerformer {
                         state.visible_start + state.cursor_row
                     };
 
-                    let buffer_len = if state.is_alt_screen { state.alt_screen.len() } else { state.main_buffer.len() };
+                    let buffer_len = if state.is_alt_screen {
+                        state.alt_screen.len()
+                    } else {
+                        state.main_buffer.len()
+                    };
 
                     if row_idx < buffer_len {
                         let line = if state.is_alt_screen {
