@@ -2,17 +2,34 @@ use crate::terminal::state::{AnsiColor, TerminalCell, TerminalState};
 use crate::utils::color::ansi_256_to_rgb;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use vte::{Params, Perform};
 
 // VTE Performer implementation
 pub struct TerminalPerformer {
     state: Arc<Mutex<TerminalState>>,
     egui_ctx: egui::Context,
+    last_repaint_time: Instant,
+    repaint_interval: Duration,
 }
 
 impl TerminalPerformer {
     pub fn new(state: Arc<Mutex<TerminalState>>, egui_ctx: egui::Context) -> Self {
-        Self { state, egui_ctx }
+        Self {
+            state,
+            egui_ctx,
+            last_repaint_time: Instant::now(),
+            repaint_interval: Duration::from_millis(16), // ~60fps limit
+        }
+    }
+
+    // Request repaint only if enough time has passed (throttled)
+    fn request_repaint_throttled(&mut self) {
+        let now = Instant::now();
+        if now.duration_since(self.last_repaint_time) >= self.repaint_interval {
+            self.egui_ctx.request_repaint();
+            self.last_repaint_time = now;
+        }
     }
 }
 
@@ -23,30 +40,32 @@ impl Perform for TerminalPerformer {
             // The PROMPT_EOL_MARK="" setting should handle the root cause
 
             state.put_char(c);
-            self.egui_ctx.request_repaint();
-        }
+        } // Drop state lock before repaint
+
+        // Use throttled repaint for better performance
+        self.request_repaint_throttled();
     }
 
     fn execute(&mut self, byte: u8) {
-        if let Ok(mut state) = self.state.lock() {
-            let mut state_changed = false;
+        let state_changed = if let Ok(mut state) = self.state.lock() {
+            let mut changed = false;
 
             match byte {
                 b'\n' => {
                     println!("🖥️ DEBUG: VTE execute \\n (newline)");
                     state.newline();
-                    state_changed = true;
+                    changed = true;
                 }
                 b'\r' => {
                     // Process carriage return but don't trigger newline
                     println!("🖥️ DEBUG: VTE execute \\r (carriage return only)");
                     state.carriage_return();
-                    state_changed = true;
+                    changed = true;
                 }
                 b'\x08' => {
                     if !state.should_protect_from_arrow_key() {
                         state.backspace();
-                        state_changed = true;
+                        changed = true;
                     }
                 }
                 b'\x09' => {
@@ -56,25 +75,29 @@ impl Perform for TerminalPerformer {
                     } else {
                         state.cursor_col = state.cols - 1;
                     }
-                    state_changed = true;
+                    changed = true;
                 }
                 b'\x0c' => {
                     state.clear_arrow_key_protection();
                     state.clear_screen();
-                    state_changed = true;
+                    changed = true;
                 }
                 b'\x7f' => {
                     if !state.should_protect_from_arrow_key() {
                         state.backspace();
-                        state_changed = true;
+                        changed = true;
                     }
                 }
                 _ => {}
             }
 
-            if state_changed {
-                self.egui_ctx.request_repaint();
-            }
+            changed
+        } else {
+            false
+        }; // Drop state lock before repaint
+
+        if state_changed {
+            self.request_repaint_throttled();
         }
     }
 
@@ -103,7 +126,7 @@ impl Perform for TerminalPerformer {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
-        if let Ok(mut state) = self.state.lock() {
+        let state_changed = if let Ok(mut state) = self.state.lock() {
             let mut state_changed = false;
 
             let cols = state.cols;
@@ -617,16 +640,20 @@ impl Perform for TerminalPerformer {
                 }
             }
 
-            // Signal repaint if state changed
-            if state_changed {
-                self.egui_ctx.request_repaint();
-            }
+            state_changed
+        } else {
+            false
+        }; // Drop state lock before repaint
+
+        // Signal repaint if state changed
+        if state_changed {
+            self.request_repaint_throttled();
         }
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
-        if let Ok(mut state) = self.state.lock() {
-            let mut state_changed = false;
+        let state_changed = if let Ok(mut state) = self.state.lock() {
+            let mut changed = false;
             match byte {
                 b'7' => {
                     // Save Cursor (DECSC)
@@ -635,7 +662,7 @@ impl Perform for TerminalPerformer {
                     } else {
                         state.saved_cursor_main = (state.cursor_row, state.cursor_col);
                     }
-                    state_changed = true;
+                    changed = true;
                 }
                 b'8' => {
                     // Restore Cursor (DECRC)
@@ -645,14 +672,18 @@ impl Perform for TerminalPerformer {
                         state.saved_cursor_main
                     };
                     state.move_cursor_to(row, col);
-                    state_changed = true;
+                    changed = true;
                 }
                 _ => {}
             }
 
-            if state_changed {
-                self.egui_ctx.request_repaint();
-            }
+            changed
+        } else {
+            false
+        }; // Drop state lock before repaint
+
+        if state_changed {
+            self.request_repaint_throttled();
         }
     }
 }

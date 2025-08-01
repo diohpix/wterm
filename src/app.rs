@@ -409,7 +409,10 @@ impl eframe::App for TerminalApp {
                 let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
 
                 // Calculate terminal content size
-                if let Ok(state) = self.terminal_state.lock() {
+                if let Ok(mut state) = self.terminal_state.lock() {
+                    // Update render_buffer if dirty (batch optimization)
+                    state.update_render_buffer_if_dirty();
+
                     // 효율적인 렌더링: 복사 없이 직접 접근
 
                     let content_width = state.cols as f32 * char_width;
@@ -483,9 +486,9 @@ impl eframe::App for TerminalApp {
                                 None // Empty row
                             }
                         } else {
-                            let buffer_row_idx = state.visible_start + row_idx;
-                            if buffer_row_idx < state.main_buffer.len() {
-                                Some(&state.main_buffer[buffer_row_idx])
+                            // Use render_buffer directly (no need for visible_start calculation)
+                            if row_idx < state.render_buffer.len() {
+                                Some(&state.render_buffer[row_idx])
                             } else {
                                 None // Empty row
                             }
@@ -617,9 +620,9 @@ impl eframe::App for TerminalApp {
                                 None
                             }
                         } else {
-                            let cursor_buffer_row = state.visible_start + state.cursor_row;
-                            if cursor_buffer_row < state.main_buffer.len() {
-                                Some(&state.main_buffer[cursor_buffer_row])
+                            // Use render_buffer directly for cursor row
+                            if state.cursor_row < state.render_buffer.len() {
+                                Some(&state.render_buffer[state.cursor_row])
                             } else {
                                 None
                             }
@@ -926,29 +929,36 @@ impl eframe::App for TerminalApp {
                                                 // Find the user input area (after prompt)
                                                 let mut prompt_end = 0;
                                                 let mut text_end = 0;
-                                                let absolute_row = if state.is_alt_screen {
-                                                    state.cursor_row
+
+                                                let row = if state.is_alt_screen {
+                                                    if state.cursor_row < state.alt_screen.len() {
+                                                        &state.alt_screen[state.cursor_row]
+                                                    } else {
+                                                        continue;
+                                                    }
                                                 } else {
-                                                    state.visible_start + state.cursor_row
+                                                    if state.cursor_row < state.render_buffer.len()
+                                                    {
+                                                        &state.render_buffer[state.cursor_row]
+                                                    } else {
+                                                        continue;
+                                                    }
                                                 };
 
-                                                if absolute_row < state.main_buffer.len() {
-                                                    let row = &state.main_buffer[absolute_row];
-                                                    for i in 0..row.len().saturating_sub(1) {
-                                                        if (row[i].ch == '~' || row[i].ch == '✗')
-                                                            && row[i + 1].ch == ' '
-                                                        {
-                                                            prompt_end = i + 2;
-                                                            break;
-                                                        }
-                                                    }
-
-                                                    for (i, cell) in
-                                                        row.iter().enumerate().skip(prompt_end)
+                                                for i in 0..row.len().saturating_sub(1) {
+                                                    if (row[i].ch == '~' || row[i].ch == '✗')
+                                                        && row[i + 1].ch == ' '
                                                     {
-                                                        if cell.ch != ' ' && cell.ch != '\u{0000}' {
-                                                            text_end = i + 1;
-                                                        }
+                                                        prompt_end = i + 2;
+                                                        break;
+                                                    }
+                                                }
+
+                                                for (i, cell) in
+                                                    row.iter().enumerate().skip(prompt_end)
+                                                {
+                                                    if cell.ch != ' ' && cell.ch != '\u{0000}' {
+                                                        text_end = i + 1;
                                                     }
                                                 }
 
@@ -974,21 +984,28 @@ impl eframe::App for TerminalApp {
 
                                                 // Find prompt end to limit leftward movement
                                                 let mut prompt_end = 0;
-                                                let absolute_row = if state.is_alt_screen {
-                                                    state.cursor_row
+
+                                                let row = if state.is_alt_screen {
+                                                    if state.cursor_row < state.alt_screen.len() {
+                                                        &state.alt_screen[state.cursor_row]
+                                                    } else {
+                                                        return;
+                                                    }
                                                 } else {
-                                                    state.visible_start + state.cursor_row
+                                                    if state.cursor_row < state.render_buffer.len()
+                                                    {
+                                                        &state.render_buffer[state.cursor_row]
+                                                    } else {
+                                                        return;
+                                                    }
                                                 };
 
-                                                if absolute_row < state.main_buffer.len() {
-                                                    let row = &state.main_buffer[absolute_row];
-                                                    for i in 0..row.len().saturating_sub(1) {
-                                                        if (row[i].ch == '~' || row[i].ch == '✗')
-                                                            && row[i + 1].ch == ' '
-                                                        {
-                                                            prompt_end = i + 2;
-                                                            break;
-                                                        }
+                                                for i in 0..row.len().saturating_sub(1) {
+                                                    if (row[i].ch == '~' || row[i].ch == '✗')
+                                                        && row[i + 1].ch == ' '
+                                                    {
+                                                        prompt_end = i + 2;
+                                                        break;
                                                     }
                                                 }
 

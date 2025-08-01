@@ -45,12 +45,16 @@ impl Default for TerminalCell {
     }
 }
 
-// Terminal state structure with unified buffer
+// Terminal state structure with separated buffers
 #[derive(Clone)]
 pub struct TerminalState {
-    // Unified buffer: all history + current screen in one VecDeque
+    // Main buffer: all history + current screen in one VecDeque
     pub main_buffer: VecDeque<Vec<TerminalCell>>,
     pub visible_start: usize, // Start of currently visible area
+
+    // Render buffer: current screen content for efficient rendering
+    pub render_buffer: Vec<Vec<TerminalCell>>,
+    pub render_buffer_dirty: bool, // Flag to track if render_buffer needs update
 
     pub cursor_row: usize, // Relative to visible area
     pub cursor_col: usize,
@@ -70,18 +74,49 @@ pub struct TerminalState {
 }
 
 impl TerminalState {
+    // Mark render_buffer as dirty for batch update
+    pub fn mark_render_dirty(&mut self) {
+        self.render_buffer_dirty = true;
+    }
+
+    // Update render_buffer from main_buffer's visible area (only if dirty)
+    pub fn update_render_buffer_if_dirty(&mut self) {
+        if self.render_buffer_dirty {
+            self.update_render_buffer();
+            self.render_buffer_dirty = false;
+        }
+    }
+
+    // Force update render_buffer from main_buffer's visible area
+    pub fn update_render_buffer(&mut self) {
+        for row_idx in 0..self.rows {
+            let buffer_row_idx = self.visible_start + row_idx;
+
+            if buffer_row_idx < self.main_buffer.len() {
+                // Copy from main_buffer to render_buffer
+                self.render_buffer[row_idx] = self.main_buffer[buffer_row_idx].clone();
+            } else {
+                // Fill with empty cells if beyond main_buffer
+                self.render_buffer[row_idx] = vec![TerminalCell::default(); self.cols];
+            }
+        }
+        self.render_buffer_dirty = false;
+    }
+
     pub fn new(rows: usize, cols: usize) -> Self {
         let mut main_buffer = VecDeque::with_capacity(MAX_HISTORY_LINES + rows);
 
         // Start with just one empty row - more will be added as needed
         main_buffer.push_back(vec![TerminalCell::default(); cols]);
 
-        let _screen = vec![vec![TerminalCell::default(); cols]; rows];
+        let render_buffer = vec![vec![TerminalCell::default(); cols]; rows];
         let alt_screen = vec![vec![TerminalCell::default(); cols]; rows];
 
-        Self {
+        let mut state = Self {
             main_buffer,
             visible_start: 0,
+            render_buffer,
+            render_buffer_dirty: false,
             cursor_row: 0,
             cursor_col: 0,
             rows,
@@ -94,7 +129,11 @@ impl TerminalState {
             saved_cursor_main: (0, 0),
             saved_cursor_alt: (0, 0),
             cursor_visible: true,
-        }
+        };
+
+        // Initialize render_buffer with main_buffer content
+        state.update_render_buffer();
+        state
     }
 
     // Note: ensure_at_bottom removed to prevent interference with resize logic
@@ -113,6 +152,9 @@ impl TerminalState {
         self.cursor_col = 0;
 
         println!("🧹 CLEARED: main_buffer completely emptied (Ctrl+L)");
+
+        // Update render_buffer after clear
+        self.update_render_buffer();
     }
 
     pub fn resize(&mut self, new_rows: usize, new_cols: usize) {
@@ -186,6 +228,10 @@ impl TerminalState {
 
         // Alt cursor can always be reset to top-left for the clean buffer
         self.saved_cursor_alt = (0, 0);
+
+        // Update render_buffer with new dimensions and content
+        self.render_buffer = vec![vec![TerminalCell::default(); new_cols]; new_rows];
+        self.update_render_buffer();
     }
 
     pub fn put_char(&mut self, ch: char) {
@@ -235,6 +281,11 @@ impl TerminalState {
         if self.cursor_col >= self.cols {
             self.newline();
         }
+
+        // Mark render_buffer as dirty for batch update later
+        if !self.is_alt_screen {
+            self.mark_render_dirty();
+        }
     }
 
     pub fn newline(&mut self) {
@@ -270,6 +321,11 @@ impl TerminalState {
 
                 self.cursor_row = self.rows - 1;
             }
+        }
+
+        // Mark render_buffer as dirty for batch update later
+        if !self.is_alt_screen {
+            self.mark_render_dirty();
         }
     }
 
@@ -326,6 +382,11 @@ impl TerminalState {
                     self.cursor_col = delete_col;
                 }
             }
+        }
+
+        // Mark render_buffer as dirty for batch update later
+        if !self.is_alt_screen {
+            self.mark_render_dirty();
         }
     }
 
