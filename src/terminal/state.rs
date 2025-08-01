@@ -244,22 +244,32 @@ impl TerminalState {
         self.cursor_row += 1;
         self.cursor_col = 0;
         if self.cursor_row >= self.rows {
-            // Add new line at the bottom, maintain history limit
-            self.main_buffer
-                .push_back(vec![TerminalCell::default(); self.cols]);
+            if self.is_alt_screen {
+                // Alt screen doesn't scroll - just stay at bottom
+                self.cursor_row = self.rows - 1;
+            } else {
+                // Main screen: add new line and scroll
+                self.main_buffer
+                    .push_back(vec![TerminalCell::default(); self.cols]);
 
-            // Trim if exceeds maximum history
-            while self.main_buffer.len() > MAX_HISTORY_LINES {
-                self.main_buffer.pop_front();
-                // Adjust visible_start when removing from front
-                if self.visible_start > 0 {
-                    self.visible_start -= 1;
+                // Trim if exceeds maximum history
+                while self.main_buffer.len() > MAX_HISTORY_LINES {
+                    self.main_buffer.pop_front();
+                    // Adjust visible_start when removing from front
+                    if self.visible_start > 0 {
+                        self.visible_start -= 1;
+                    }
                 }
-            }
 
-            self.cursor_row = self.rows - 1;
-            // Don't call ensure_at_bottom() here as it can interfere with resize
-            // The visible_start is already managed by resize() method
+                // Update visible_start to show the bottom of the buffer (scroll down)
+                if self.main_buffer.len() >= self.rows {
+                    self.visible_start = self.main_buffer.len() - self.rows;
+                } else {
+                    self.visible_start = 0;
+                }
+
+                self.cursor_row = self.rows - 1;
+            }
         }
     }
 
