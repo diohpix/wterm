@@ -347,9 +347,7 @@ impl TerminalApp {
             let is_alt = state.is_alt_screen;
             state.resize(new_rows, new_cols);
 
-            // If we're on the alternative screen, a resize should effectively clear it,
-            // as the full-screen application is expected to redraw everything from scratch.
-            // This prevents visual artifacts from the previous render.
+            // Only clear alt screen, preserve main screen content
             if is_alt {
                 state.clear_screen();
             }

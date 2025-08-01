@@ -69,14 +69,12 @@ impl Perform for TerminalPerformer {
 
             match byte {
                 b'\n' => {
-                    println!("🖥️ DEBUG: VTE execute \\n (newline)");
                     state.newline();
                     changed = true;
                     immediate = true; // Important event - repaint immediately
                 }
                 b'\r' => {
                     // Process carriage return but don't trigger newline
-                    println!("🖥️ DEBUG: VTE execute \\r (carriage return only)");
                     state.carriage_return();
                     changed = true;
                     immediate = true; // Important event - repaint immediately
