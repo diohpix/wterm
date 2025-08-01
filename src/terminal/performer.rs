@@ -11,6 +11,7 @@ pub struct TerminalPerformer {
     egui_ctx: egui::Context,
     last_repaint_time: Instant,
     repaint_interval: Duration,
+    initial_repaints: u32, // Track initial repaints to skip throttling
 }
 
 impl TerminalPerformer {
@@ -19,17 +20,32 @@ impl TerminalPerformer {
             state,
             egui_ctx,
             last_repaint_time: Instant::now(),
-            repaint_interval: Duration::from_millis(16), // ~60fps limit
+            repaint_interval: Duration::from_millis(8), // ~120fps limit for more responsive updates
+            initial_repaints: 0,                        // Start counting initial repaints
         }
     }
 
     // Request repaint only if enough time has passed (throttled)
     fn request_repaint_throttled(&mut self) {
+        // Skip throttling for the first many repaints to ensure immediate initial rendering
+        if self.initial_repaints < 50 {
+            self.egui_ctx.request_repaint();
+            self.initial_repaints += 1;
+            self.last_repaint_time = Instant::now();
+            return;
+        }
+
         let now = Instant::now();
         if now.duration_since(self.last_repaint_time) >= self.repaint_interval {
             self.egui_ctx.request_repaint();
             self.last_repaint_time = now;
         }
+    }
+
+    // Request immediate repaint for important terminal events
+    fn request_repaint_immediate(&mut self) {
+        self.egui_ctx.request_repaint();
+        self.last_repaint_time = Instant::now();
     }
 }
 
@@ -47,20 +63,23 @@ impl Perform for TerminalPerformer {
     }
 
     fn execute(&mut self, byte: u8) {
-        let state_changed = if let Ok(mut state) = self.state.lock() {
+        let (state_changed, needs_immediate_repaint) = if let Ok(mut state) = self.state.lock() {
             let mut changed = false;
+            let mut immediate = false;
 
             match byte {
                 b'\n' => {
                     println!("🖥️ DEBUG: VTE execute \\n (newline)");
                     state.newline();
                     changed = true;
+                    immediate = true; // Important event - repaint immediately
                 }
                 b'\r' => {
                     // Process carriage return but don't trigger newline
                     println!("🖥️ DEBUG: VTE execute \\r (carriage return only)");
                     state.carriage_return();
                     changed = true;
+                    immediate = true; // Important event - repaint immediately
                 }
                 b'\x08' => {
                     if !state.should_protect_from_arrow_key() {
@@ -81,6 +100,7 @@ impl Perform for TerminalPerformer {
                     state.clear_arrow_key_protection();
                     state.clear_screen();
                     changed = true;
+                    immediate = true; // Clear screen - repaint immediately
                 }
                 b'\x7f' => {
                     if !state.should_protect_from_arrow_key() {
@@ -91,13 +111,17 @@ impl Perform for TerminalPerformer {
                 _ => {}
             }
 
-            changed
+            (changed, immediate)
         } else {
-            false
+            (false, false)
         }; // Drop state lock before repaint
 
         if state_changed {
-            self.request_repaint_throttled();
+            if needs_immediate_repaint {
+                self.request_repaint_immediate();
+            } else {
+                self.request_repaint_throttled();
+            }
         }
     }
 

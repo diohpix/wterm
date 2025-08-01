@@ -270,6 +270,9 @@ impl TerminalApp {
             }
         });
 
+        // Request initial repaint to ensure first render
+        cc.egui_ctx.request_repaint();
+
         Ok(Self {
             terminal_state,
             pty_writer,

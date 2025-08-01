@@ -87,19 +87,84 @@ impl TerminalState {
         }
     }
 
-    // Force update render_buffer from main_buffer's visible area
+    // Force update render_buffer from main_buffer's visible area with reflow
     pub fn update_render_buffer(&mut self) {
-        for row_idx in 0..self.rows {
-            let buffer_row_idx = self.visible_start + row_idx;
-
-            if buffer_row_idx < self.main_buffer.len() {
-                // Copy from main_buffer to render_buffer
-                self.render_buffer[row_idx] = self.main_buffer[buffer_row_idx].clone();
-            } else {
-                // Fill with empty cells if beyond main_buffer
-                self.render_buffer[row_idx] = vec![TerminalCell::default(); self.cols];
-            }
+        // Clear render_buffer first
+        for row in &mut self.render_buffer {
+            row.fill(TerminalCell::default());
         }
+
+        let mut render_row_idx = 0;
+        let mut main_buffer_idx = self.visible_start;
+
+        // Process main_buffer rows and reflow them into render_buffer
+        while render_row_idx < self.rows && main_buffer_idx < self.main_buffer.len() {
+            let source_row = &self.main_buffer[main_buffer_idx];
+
+            // Check if this row needs reflow: only if it's longer than current cols
+            // AND has actual content beyond the current column width
+            let needs_reflow = if source_row.len() > self.cols {
+                // Check if there's meaningful content beyond self.cols position
+                source_row[self.cols..]
+                    .iter()
+                    .any(|cell| cell.ch != ' ' && cell.ch != '\u{0000}')
+            } else {
+                false
+            };
+
+            // If no reflow needed, do simple copy
+            if !needs_reflow {
+                // Simple copy without reflow
+                let copy_length = source_row.len().min(self.cols);
+                self.render_buffer[render_row_idx][..copy_length]
+                    .clone_from_slice(&source_row[..copy_length]);
+                render_row_idx += 1;
+            } else {
+                // Reflow needed: split long row across multiple render rows
+                let mut source_col = 0;
+
+                while source_col < source_row.len() && render_row_idx < self.rows {
+                    let mut render_col = 0;
+
+                    // Fill current render row up to cols width
+                    while render_col < self.cols && source_col < source_row.len() {
+                        // Skip null characters (wide char continuations)
+                        if source_row[source_col].ch == '\u{0000}' {
+                            source_col += 1;
+                            continue;
+                        }
+
+                        // Check if character fits in current render row
+                        let char_width = source_row[source_col].ch.width().unwrap_or(1);
+                        if render_col + char_width > self.cols {
+                            break; // Move to next render row
+                        }
+
+                        // Copy character to render_buffer
+                        self.render_buffer[render_row_idx][render_col] =
+                            source_row[source_col].clone();
+
+                        // For wide characters, mark continuation
+                        if char_width == 2 && render_col + 1 < self.cols {
+                            self.render_buffer[render_row_idx][render_col + 1] = TerminalCell {
+                                ch: '\u{0000}',
+                                color: source_row[source_col].color.clone(),
+                            };
+                        }
+
+                        render_col += char_width;
+                        source_col += 1;
+                    }
+
+                    // Move to next render row
+                    render_row_idx += 1;
+                }
+            }
+
+            // Always move to next main_buffer row after processing
+            main_buffer_idx += 1;
+        }
+
         self.render_buffer_dirty = false;
     }
 
@@ -133,6 +198,8 @@ impl TerminalState {
 
         // Initialize render_buffer with main_buffer content
         state.update_render_buffer();
+        // Mark as dirty to ensure initial render
+        state.render_buffer_dirty = true;
         state
     }
 
@@ -169,7 +236,6 @@ impl TerminalState {
             self.visible_start + self.cursor_row // Main screen cursor is relative to visible_start
         };
 
-        let old_cols = self.cols;
         self.rows = new_rows;
         self.cols = new_cols;
 
@@ -177,23 +243,7 @@ impl TerminalState {
             // For alt screen, just recreate with new dimensions
             self.alt_screen = vec![vec![TerminalCell::default(); new_cols]; new_rows];
         } else {
-            // For main screen, preserve content during resize
-            // Handle column resizing more carefully to preserve content
-            if new_cols != old_cols {
-                for row in &mut self.main_buffer {
-                    if new_cols > old_cols {
-                        // Expanding: add empty cells to the right
-                        row.resize(new_cols, TerminalCell::default());
-                    } else {
-                        // Shrinking: preserve as much content as possible
-                        if row.len() > new_cols {
-                            row.truncate(new_cols);
-                        }
-                        // Ensure the row has exactly new_cols elements
-                        row.resize(new_cols, TerminalCell::default());
-                    }
-                }
-            }
+            // For main screen, don't modify main_buffer - let render_buffer handle column resizing
 
             // Simplify visible_start calculation - just stay at the bottom
             if self.main_buffer.len() >= new_rows {
@@ -259,14 +309,24 @@ impl TerminalState {
                     .push_back(vec![TerminalCell::default(); self.cols]);
             }
 
-            // Place the character with current color
-            self.main_buffer[absolute_row][self.cursor_col] = TerminalCell {
-                ch,
-                color: self.current_color.clone(),
-            };
+            // Ensure the row has enough columns (for compatibility with old data)
+            if self.main_buffer[absolute_row].len() < self.cols {
+                self.main_buffer[absolute_row].resize(self.cols, TerminalCell::default());
+            }
+
+            // Place the character with current color (with bounds check)
+            if self.cursor_col < self.main_buffer[absolute_row].len() {
+                self.main_buffer[absolute_row][self.cursor_col] = TerminalCell {
+                    ch,
+                    color: self.current_color.clone(),
+                };
+            }
 
             // For wide characters (width 2), mark the second cell as a continuation
-            if char_width == 2 && self.cursor_col + 1 < self.cols {
+            if char_width == 2
+                && self.cursor_col + 1 < self.cols
+                && self.cursor_col + 1 < self.main_buffer[absolute_row].len()
+            {
                 self.main_buffer[absolute_row][self.cursor_col + 1] = TerminalCell {
                     ch: '\u{0000}', // Null char as continuation marker
                     color: self.current_color.clone(),
@@ -441,8 +501,8 @@ impl TerminalState {
         if self.is_alt_screen {
             // Restore main screen and cursor position
             self.is_alt_screen = false;
-            self.cursor_row = self.saved_cursor_main.0;
-            self.cursor_col = self.saved_cursor_main.1;
+            self.cursor_row = self.saved_cursor_main.0.min(self.rows.saturating_sub(1));
+            self.cursor_col = self.saved_cursor_main.1.min(self.cols.saturating_sub(1));
 
             println!("🔄 Restored main screen buffer");
         }
