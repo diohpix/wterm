@@ -56,9 +56,10 @@ pub struct TerminalState {
     pub render_buffer: Vec<Vec<TerminalCell>>,
     pub render_buffer_dirty: bool, // Flag to track if render_buffer needs update
 
-    pub cursor_row: usize, // Relative to visible area
+    pub cursor_row: usize, // Logical position relative to visible area
     pub cursor_col: usize,
-    pub rows: usize, // Visible rows
+    pub cursor_offset_row: usize, // Additional rows due to reflow
+    pub rows: usize,              // Visible rows
     pub cols: usize,
     pub current_color: AnsiColor,
 
@@ -74,6 +75,99 @@ pub struct TerminalState {
 }
 
 impl TerminalState {
+    // Get the actual render position of cursor
+    pub fn get_render_cursor_row(&self) -> usize {
+        if self.is_alt_screen {
+            self.cursor_row // Alt screen doesn't use offset
+        } else {
+            (self.cursor_row + self.cursor_offset_row).min(self.rows.saturating_sub(1))
+        }
+    }
+
+    // Calculate cursor offset due to reflow
+    fn calculate_cursor_offset(&self) -> usize {
+        if self.is_alt_screen {
+            return 0; // Alt screen doesn't need offset
+        }
+
+        let cursor_absolute_row = self.visible_start + self.cursor_row;
+        if cursor_absolute_row >= self.main_buffer.len() {
+            return 0;
+        }
+
+        let mut total_offset = 0;
+
+        // Iterate through all main_buffer rows from visible_start to cursor row
+        for main_buffer_idx in self.visible_start..=cursor_absolute_row {
+            if main_buffer_idx >= self.main_buffer.len() {
+                break;
+            }
+
+            let source_row = &self.main_buffer[main_buffer_idx];
+
+            // Check if this row needs reflow
+            let needs_reflow = if source_row.len() > self.cols {
+                source_row[self.cols..]
+                    .iter()
+                    .any(|cell| cell.ch != ' ' && cell.ch != '\u{0000}')
+            } else {
+                false
+            };
+
+            if !needs_reflow {
+                // No reflow, no additional offset
+                continue;
+            }
+
+            // Calculate how many render rows this main_buffer row creates
+            let mut render_rows_count = 0;
+            let mut source_col = 0;
+
+            // If this is the cursor row, only count up to cursor position
+            let max_col = if main_buffer_idx == cursor_absolute_row {
+                self.cursor_col.min(source_row.len())
+            } else {
+                source_row.len()
+            };
+
+            while source_col < max_col {
+                let mut render_col = 0;
+
+                // Fill one render row
+                while render_col < self.cols && source_col < max_col {
+                    // Skip null characters (wide char continuations)
+                    if source_row[source_col].ch == '\u{0000}' {
+                        source_col += 1;
+                        continue;
+                    }
+
+                    // Check if character fits in current render row
+                    let char_width = source_row[source_col].ch.width().unwrap_or(1);
+                    if render_col + char_width > self.cols {
+                        break; // Move to next render row
+                    }
+
+                    render_col += char_width;
+                    source_col += 1;
+                }
+
+                render_rows_count += 1;
+            }
+
+            // Add offset: (render_rows_count - 1) because original was 1 row
+            if render_rows_count > 1 {
+                total_offset += render_rows_count - 1;
+            }
+        }
+
+        total_offset
+    }
+
+    // Update cursor offset when reflow is needed
+    pub fn update_cursor_offset(&mut self) {
+        self.cursor_offset_row = self.calculate_cursor_offset();
+    }
+
     // Mark render_buffer as dirty for batch update
     pub fn mark_render_dirty(&mut self) {
         self.render_buffer_dirty = true;
@@ -83,11 +177,12 @@ impl TerminalState {
     pub fn update_render_buffer_if_dirty(&mut self) {
         if self.render_buffer_dirty {
             self.update_render_buffer();
+            self.update_cursor_offset(); // Update offset after render buffer update
             self.render_buffer_dirty = false;
         }
     }
 
-    // Force update render_buffer from main_buffer's visible area with reflow
+    // Simplified render buffer update without complex cursor tracking
     pub fn update_render_buffer(&mut self) {
         // Clear render_buffer first
         for row in &mut self.render_buffer {
@@ -101,10 +196,8 @@ impl TerminalState {
         while render_row_idx < self.rows && main_buffer_idx < self.main_buffer.len() {
             let source_row = &self.main_buffer[main_buffer_idx];
 
-            // Check if this row needs reflow: only if it's longer than current cols
-            // AND has actual content beyond the current column width
+            // Check if this row needs reflow
             let needs_reflow = if source_row.len() > self.cols {
-                // Check if there's meaningful content beyond self.cols position
                 source_row[self.cols..]
                     .iter()
                     .any(|cell| cell.ch != ' ' && cell.ch != '\u{0000}')
@@ -112,7 +205,6 @@ impl TerminalState {
                 false
             };
 
-            // If no reflow needed, do simple copy
             if !needs_reflow {
                 // Simple copy without reflow
                 let copy_length = source_row.len().min(self.cols);
@@ -120,7 +212,7 @@ impl TerminalState {
                     .clone_from_slice(&source_row[..copy_length]);
                 render_row_idx += 1;
             } else {
-                // Reflow needed: split long row across multiple render rows
+                // Reflow: split long row across multiple render rows
                 let mut source_col = 0;
 
                 while source_col < source_row.len() && render_row_idx < self.rows {
@@ -165,123 +257,6 @@ impl TerminalState {
             main_buffer_idx += 1;
         }
 
-        self.render_buffer_dirty = false;
-    }
-
-    // Update render_buffer and adjust cursor position based on reflow
-    fn update_render_buffer_with_cursor_adjustment(&mut self, cursor_absolute_row: usize) {
-        // Clear render_buffer first
-        for row in &mut self.render_buffer {
-            row.fill(TerminalCell::default());
-        }
-
-        let mut render_row_idx = 0;
-        let mut main_buffer_idx = self.visible_start;
-        let mut new_cursor_row = self.cursor_row; // Default fallback
-
-        // Process main_buffer rows and reflow them into render_buffer
-        while render_row_idx < self.rows && main_buffer_idx < self.main_buffer.len() {
-            let source_row = &self.main_buffer[main_buffer_idx];
-
-            // Check if this is the row where cursor was located
-            let is_cursor_row = main_buffer_idx == cursor_absolute_row;
-            let cursor_render_start = render_row_idx; // Remember where this main_buffer row starts in render
-
-            // Check if this row needs reflow: only if it's longer than current cols
-            // AND has actual content beyond the current column width
-            let needs_reflow = if source_row.len() > self.cols {
-                // Check if there's meaningful content beyond self.cols position
-                source_row[self.cols..]
-                    .iter()
-                    .any(|cell| cell.ch != ' ' && cell.ch != '\u{0000}')
-            } else {
-                false
-            };
-
-            // If no reflow needed, do simple copy
-            if !needs_reflow {
-                // Simple copy without reflow
-                let copy_length = source_row.len().min(self.cols);
-                self.render_buffer[render_row_idx][..copy_length]
-                    .clone_from_slice(&source_row[..copy_length]);
-                render_row_idx += 1;
-
-                // If this is cursor row, update cursor position
-                if is_cursor_row {
-                    new_cursor_row = cursor_render_start;
-                }
-            } else {
-                // Reflow needed: split long row across multiple render rows
-                let mut source_col = 0;
-                let mut cursor_found_in_row = false;
-
-                while source_col < source_row.len() && render_row_idx < self.rows {
-                    let mut render_col = 0;
-
-                    // Fill current render row up to cols width
-                    while render_col < self.cols && source_col < source_row.len() {
-                        // Skip null characters (wide char continuations)
-                        if source_row[source_col].ch == '\u{0000}' {
-                            source_col += 1;
-                            continue;
-                        }
-
-                        // Check if character fits in current render row
-                        let char_width = source_row[source_col].ch.width().unwrap_or(1);
-                        if render_col + char_width > self.cols {
-                            break; // Move to next render row
-                        }
-
-                        // Copy character to render_buffer
-                        self.render_buffer[render_row_idx][render_col] =
-                            source_row[source_col].clone();
-
-                        // For wide characters, mark continuation
-                        if char_width == 2 && render_col + 1 < self.cols {
-                            self.render_buffer[render_row_idx][render_col + 1] = TerminalCell {
-                                ch: '\u{0000}',
-                                color: source_row[source_col].color.clone(),
-                            };
-                        }
-
-                        // Check if this is where cursor should be (for cursor row)
-                        if is_cursor_row && !cursor_found_in_row && source_col == self.cursor_col {
-                            new_cursor_row = render_row_idx;
-                            cursor_found_in_row = true;
-                        }
-
-                        render_col += char_width;
-                        source_col += 1;
-                    }
-
-                    // Move to next render row
-                    render_row_idx += 1;
-                }
-
-                // If cursor was at the end of a reflow row or beyond the content, place it appropriately
-                if is_cursor_row && !cursor_found_in_row {
-                    // If cursor was beyond the content or at the very end, put it at the last render row
-                    new_cursor_row = (render_row_idx - 1).max(cursor_render_start);
-                }
-            }
-
-            // Always move to next main_buffer row after processing
-            main_buffer_idx += 1;
-        }
-
-        // Update cursor row (new_cursor_row is already relative to render_buffer)
-        // But ensure it doesn't point beyond actual main_buffer content
-        let max_valid_cursor_row = if self.main_buffer.len() > self.visible_start {
-            (self.main_buffer.len() - 1 - self.visible_start).min(self.rows.saturating_sub(1))
-        } else {
-            0
-        };
-
-        self.cursor_row = new_cursor_row.min(max_valid_cursor_row);
-        println!(
-            "🔤 UPDATED CURSOR ROW: {} (new_cursor_row: {}, max_valid: {}, main_buffer_len: {}, visible_start: {})",
-            self.cursor_row, new_cursor_row, max_valid_cursor_row, self.main_buffer.len(), self.visible_start
-        );
         self.render_buffer_dirty = false;
     }
 
@@ -301,6 +276,7 @@ impl TerminalState {
             render_buffer_dirty: false,
             cursor_row: 0,
             cursor_col: 0,
+            cursor_offset_row: 0, // Initialize offset to 0
             rows,
             cols,
             current_color: AnsiColor::default(),
@@ -315,6 +291,7 @@ impl TerminalState {
 
         // Initialize render_buffer with main_buffer content
         state.update_render_buffer();
+        state.update_cursor_offset();
         // Mark as dirty to ensure initial render
         state.render_buffer_dirty = true;
         state
@@ -348,9 +325,9 @@ impl TerminalState {
 
         // Calculate current cursor absolute position BEFORE changing anything
         let old_cursor_absolute_row = if self.is_alt_screen {
-            self.cursor_row // Alt screen cursor is already absolute
+            self.cursor_row
         } else {
-            self.visible_start + self.cursor_row // Main screen cursor is relative to visible_start
+            self.visible_start + self.cursor_row
         };
 
         self.rows = new_rows;
@@ -359,10 +336,9 @@ impl TerminalState {
         if self.is_alt_screen {
             // For alt screen, just recreate with new dimensions
             self.alt_screen = vec![vec![TerminalCell::default(); new_cols]; new_rows];
+            self.cursor_offset_row = 0; // Reset offset for alt screen
         } else {
-            // For main screen, don't modify main_buffer - let render_buffer handle reflow
-
-            // Simplify visible_start calculation - just stay at the bottom
+            // For main screen, adjust visible_start
             if self.main_buffer.len() >= new_rows {
                 self.visible_start = self.main_buffer.len() - new_rows;
             } else {
@@ -370,42 +346,32 @@ impl TerminalState {
             }
         }
 
-        // Ensure cursor position is still valid after resize
+        // Adjust cursor position
         self.cursor_col = self.cursor_col.min(new_cols.saturating_sub(1));
 
         // Adjust cursor_row based on the new visible_start (for main screen only)
         if !self.is_alt_screen {
-            // Calculate new cursor_row relative to new visible_start
             if old_cursor_absolute_row >= self.visible_start {
                 self.cursor_row = old_cursor_absolute_row - self.visible_start;
             } else {
-                // Cursor was above visible area, place it at top
                 self.cursor_row = 0;
             }
-            // Ensure cursor_row is within bounds
             self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
         } else {
-            // For alt screen, just ensure bounds
             self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
         }
 
-        // Update saved cursor positions to stay within bounds
+        // Update saved cursor positions
         self.saved_cursor_main.0 = self.saved_cursor_main.0.min(new_rows.saturating_sub(1));
         self.saved_cursor_main.1 = self.saved_cursor_main.1.min(new_cols.saturating_sub(1));
-
-        // Alt cursor can always be reset to top-left for the clean buffer
         self.saved_cursor_alt = (0, 0);
 
-        // Update render_buffer with new dimensions and content
+        // Update render_buffer with new dimensions
         self.render_buffer = vec![vec![TerminalCell::default(); new_cols]; new_rows];
 
-        // Calculate reflow effect on cursor position (main screen only)
-        if !self.is_alt_screen {
-            let old_cursor_absolute_row = self.visible_start + self.cursor_row;
-            self.update_render_buffer_with_cursor_adjustment(old_cursor_absolute_row);
-        } else {
-            self.update_render_buffer();
-        }
+        // Update render buffer and cursor offset
+        self.update_render_buffer();
+        self.update_cursor_offset();
     }
 
     pub fn put_char(&mut self, ch: char) {

@@ -605,7 +605,8 @@ impl eframe::App for TerminalApp {
                     } // end of for row_idx
 
                     // Now draw cursor separately at correct position
-                    let cursor_y = response.rect.top() + state.cursor_row as f32 * line_height;
+                    let cursor_y =
+                        response.rect.top() + state.get_render_cursor_row() as f32 * line_height;
 
                     // Only draw the cursor if it's within the visible area
                     if cursor_y >= ui.clip_rect().top()
@@ -621,9 +622,10 @@ impl eframe::App for TerminalApp {
                                 None
                             }
                         } else {
-                            // Use render_buffer directly for cursor row
-                            if state.cursor_row < state.render_buffer.len() {
-                                Some(&state.render_buffer[state.cursor_row])
+                            // Use render_buffer with offset-adjusted cursor row
+                            let render_cursor_row = state.get_render_cursor_row();
+                            if render_cursor_row < state.render_buffer.len() {
+                                Some(&state.render_buffer[render_cursor_row])
                             } else {
                                 None
                             }
@@ -701,7 +703,7 @@ impl eframe::App for TerminalApp {
 
                         // Only draw cursor if we're actually at a valid position and it's visible
                         if state.cursor_visible
-                            && state.cursor_row < state.rows
+                            && state.get_render_cursor_row() < state.rows
                             && state.cursor_col < state.cols
                         {
                             // Draw underscore cursor at the bottom of the character cell
@@ -938,9 +940,11 @@ impl eframe::App for TerminalApp {
                                                         continue;
                                                     }
                                                 } else {
-                                                    if state.cursor_row < state.render_buffer.len()
+                                                    let render_cursor_row =
+                                                        state.get_render_cursor_row();
+                                                    if render_cursor_row < state.render_buffer.len()
                                                     {
-                                                        &state.render_buffer[state.cursor_row]
+                                                        &state.render_buffer[render_cursor_row]
                                                     } else {
                                                         continue;
                                                     }
@@ -993,9 +997,11 @@ impl eframe::App for TerminalApp {
                                                         return;
                                                     }
                                                 } else {
-                                                    if state.cursor_row < state.render_buffer.len()
+                                                    let render_cursor_row =
+                                                        state.get_render_cursor_row();
+                                                    if render_cursor_row < state.render_buffer.len()
                                                     {
-                                                        &state.render_buffer[state.cursor_row]
+                                                        &state.render_buffer[render_cursor_row]
                                                     } else {
                                                         return;
                                                     }
