@@ -160,16 +160,6 @@ impl TerminalApp {
             text.as_bytes()
         );
         
-        // Mark user input start position before sending first input character
-        // (but skip special sequences like escape sequences)
-        if !text.starts_with('\x1b') && !text.starts_with('\t') && !text.starts_with('\n') {
-            if let Ok(mut state) = self.terminal_state.lock() {
-                if !state.user_input_start_set {
-                    state.mark_user_input_start();
-                }
-            }
-        }
-        
         if let Ok(mut writer) = self.pty_writer.lock() {
             let _ = writer.write_all(text.as_bytes());
             let _ = writer.flush();
@@ -801,20 +791,13 @@ impl eframe::App for TerminalApp {
                                             let _still_composing = self.korean_state.handle_backspace();
                                             // Korean composition is purely local - don't send to PTY
                                         } else {
-                                            // For regular backspace, let shell handle it by sending to PTY
-                                            // Shell will process backspace and send back the screen update
-                                            let should_send_backspace = if let Ok(mut state) = self.terminal_state.lock() {
+                                            // For regular backspace, let shell handle everything
+                                            // Shell has its own prompt protection (readline, zle, etc.)
+                                            if let Ok(mut state) = self.terminal_state.lock() {
                                                 state.clear_arrow_key_protection();
-                                                // Check if backspace is safe before sending to shell
-                                                state.can_backspace_safely()
-                                            } else {
-                                                false
-                                            };
-                                            
-                                            if should_send_backspace {
-                                                self.send_to_pty("\x08");
                                             }
-                                            // Don't call state.backspace() - let VTE performer handle shell's response
+                                            // Send backspace directly to shell - no terminal-level protection needed
+                                            self.send_to_pty("\x08");
                                         }
                                     }
                                     egui::Key::ArrowUp => {

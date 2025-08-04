@@ -86,11 +86,6 @@ pub struct TerminalState {
     // Scrolling region (DECSTBM)
     pub scroll_region_top: usize, // Top line of scrolling region (0-based)
     pub scroll_region_bottom: usize, // Bottom line of scrolling region (0-based)
-
-    // User input protection - track where user input starts
-    pub user_input_start_row: usize,
-    pub user_input_start_col: usize,
-    pub user_input_start_set: bool, // Whether input start position is valid
 }
 
 impl TerminalState {
@@ -233,9 +228,6 @@ impl TerminalState {
             main_buffer_backup: None,
             scroll_region_top: 0,
             scroll_region_bottom: rows - 1,
-            user_input_start_row: 0,
-            user_input_start_col: 0,
-            user_input_start_set: false,
         };
         state.update_render_buffer();
         state
@@ -247,8 +239,6 @@ impl TerminalState {
             .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
         self.cursor_row = 0;
         self.cursor_col = 0;
-        // Reset user input start position on screen clear
-        self.reset_user_input_start();
         self.mark_render_dirty();
     }
 
@@ -353,9 +343,6 @@ impl TerminalState {
                 self.cursor_row -= 1;
             }
         }
-
-        // Reset user input start position on newline (new prompt will start)
-        self.reset_user_input_start();
 
         self.mark_render_dirty();
     }
@@ -683,67 +670,5 @@ impl TerminalState {
         }
 
         self.mark_render_dirty();
-    }
-
-    // User input protection methods
-
-    /// Mark the current cursor position as the start of user input
-    pub fn mark_user_input_start(&mut self) {
-        self.user_input_start_row = self.cursor_row;
-        self.user_input_start_col = self.cursor_col;
-        self.user_input_start_set = true;
-        println!(
-            "📍 Marked user input start at row: {}, col: {}",
-            self.cursor_row, self.cursor_col
-        );
-    }
-
-    /// Reset the user input start position (called on newline, clear screen, etc.)
-    pub fn reset_user_input_start(&mut self) {
-        self.user_input_start_set = false;
-        println!("🔄 Reset user input start position");
-    }
-
-    /// Check if backspace is safe (cursor is after user input start position)
-    pub fn can_backspace_safely(&self) -> bool {
-        if !self.user_input_start_set {
-            // No input start set - use pattern-based protection as fallback
-            return self.can_backspace_with_pattern_protection();
-        }
-
-        // Only allow backspace if cursor is after the input start position
-        if self.cursor_row > self.user_input_start_row {
-            return true;
-        } else if self.cursor_row == self.user_input_start_row {
-            return self.cursor_col > self.user_input_start_col;
-        } else {
-            return false;
-        }
-    }
-
-    /// Fallback pattern-based protection for cases where input start is not set
-    fn can_backspace_with_pattern_protection(&self) -> bool {
-        if self.cursor_col == 0 {
-            return false;
-        }
-
-        // Find prompt end to prevent deleting into prompt area
-        let mut prompt_end = 0;
-        if self.cursor_row < self.main_buffer.len() {
-            let row = &self.main_buffer[self.cursor_row];
-            // Find prompt end: "~ " or "✗ " pattern
-            for i in 0..row.len().saturating_sub(1) {
-                if (row[i].ch == '~' || row[i].ch == '✗')
-                    && i + 1 < row.len()
-                    && row[i + 1].ch == ' '
-                {
-                    prompt_end = i + 2; // Position after "~ " or "✗ "
-                    break;
-                }
-            }
-        }
-
-        // Only allow backspace if cursor is beyond prompt area
-        self.cursor_col > prompt_end
     }
 }
