@@ -105,90 +105,98 @@ impl TerminalState {
         }
     }
 
-    // Update render buffer: apply reflow to main_buffer and calculate visual cursor position
+    // Update render buffer and calculate cursor offset in one pass (like commit 7a65ed9)
     pub fn update_render_buffer(&mut self) {
+        // Clear render_buffer first
         self.render_buffer.clear();
-        let mut visual_cursor_row = 0;
-        let mut visual_cursor_col = 0;
-        let mut cursor_found = false;
 
-        for (main_row_idx, source_row) in self.main_buffer.iter().enumerate() {
+        let mut main_buffer_idx = 0;
+
+        // Process main_buffer rows and reflow them into render_buffer
+        // Keep the original design: render_buffer processes all main_buffer for proper scrolling
+        while main_buffer_idx < self.main_buffer.len() {
+            let source_row = &self.main_buffer[main_buffer_idx];
+            let is_cursor_row = main_buffer_idx == self.cursor_row;
+
+            // Find the actual end of text in this row
             let text_end = self.find_row_text_end(source_row);
-            if text_end == 0 {
-                // Empty line, add a blank row to render buffer
-                self.render_buffer.push(Vec::new());
-                if main_row_idx == self.cursor_row {
-                    visual_cursor_row = self.render_buffer.len() - 1;
-                    visual_cursor_col = 0;
-                    cursor_found = true;
-                }
-                continue;
-            }
 
-            let mut source_col = 0;
-            while source_col < text_end {
+            // Check if this row needs reflow based on actual text length
+            let needs_reflow = text_end > self.cols;
+
+            if !needs_reflow {
+                // Simple copy without reflow - only copy up to text end or cols
                 let mut render_row = vec![TerminalCell::default(); self.cols];
-                let mut current_render_col = 0;
-                let line_start_col = source_col;
-
-                while current_render_col < self.cols && source_col < text_end {
-                    let cell = &source_row[source_col];
-                    let char_width = cell.ch.width().unwrap_or(1);
-
-                    if current_render_col + char_width > self.cols {
-                        break;
-                    }
-
-                    render_row[current_render_col] = cell.clone();
-                    if char_width == 2 {
-                        if current_render_col + 1 < self.cols {
-                            render_row[current_render_col + 1] = TerminalCell {
-                                ch: '\u{0000}',
-                                color: cell.color.clone(),
-                            };
-                        }
-                    }
-                    current_render_col += char_width;
-                    source_col += 1;
+                let copy_length = text_end.min(self.cols);
+                if copy_length > 0 {
+                    render_row[..copy_length].clone_from_slice(&source_row[..copy_length]);
                 }
                 self.render_buffer.push(render_row);
 
-                // Check if the logical cursor is in this main_buffer row
-                if !cursor_found && main_row_idx == self.cursor_row {
-                    // Check if the cursor is within the segment we just processed
-                    if self.cursor_col >= line_start_col && self.cursor_col < source_col {
-                        visual_cursor_row = self.render_buffer.len() - 1;
-                        // Calculate visual column by iterating from the start of the visual line
-                        let mut temp_col = 0;
-                        let end_col = self.cursor_col.min(source_row.len());
-                        for i in line_start_col..end_col {
-                            if i < source_row.len() {
-                                temp_col += source_row[i].ch.width().unwrap_or(1);
-                            }
+                // If this is cursor row, record the render row
+                if is_cursor_row {
+                    self.render_cursor_row = self.render_buffer.len() - 1;
+                    self.render_cursor_col = self.cursor_col.min(self.cols);
+                }
+            } else {
+                // Reflow: split long row across multiple render rows
+                let mut source_col = 0;
+                let cursor_render_start = self.render_buffer.len(); // Remember where this row starts
+
+                while source_col < text_end {
+                    let mut render_row = vec![TerminalCell::default(); self.cols];
+                    let mut render_col = 0;
+
+                    // Fill current render row up to cols width
+                    while render_col < self.cols && source_col < text_end {
+                        // Skip null characters (wide char continuations)
+                        if source_row[source_col].ch == '\u{0000}' {
+                            source_col += 1;
+                            continue;
                         }
-                        visual_cursor_col = temp_col;
-                        cursor_found = true;
+
+                        // Check if character fits in current render row
+                        let char_width = source_row[source_col].ch.width().unwrap_or(1);
+                        if render_col + char_width > self.cols {
+                            break; // Move to next render row
+                        }
+
+                        render_row[render_col] = source_row[source_col].clone();
+
+                        // For wide characters, mark the second cell as continuation
+                        if char_width == 2 && render_col + 1 < self.cols {
+                            render_row[render_col + 1] = TerminalCell {
+                                ch: '\u{0000}',
+                                color: source_row[source_col].color.clone(),
+                            };
+                        }
+
+                        // Check if this is where cursor should be (for cursor row)
+                        if is_cursor_row && source_col == self.cursor_col {
+                            self.render_cursor_row = self.render_buffer.len();
+                            self.render_cursor_col = render_col;
+                        }
+
+                        render_col += char_width;
+                        source_col += 1;
                     }
+
+                    self.render_buffer.push(render_row);
+                }
+
+                // If cursor was in this row but not found yet (at end of line or beyond),
+                // place it at the last render row for this main_buffer row
+                if is_cursor_row && self.cursor_col >= text_end {
+                    self.render_cursor_row =
+                        (self.render_buffer.len() - 1).max(cursor_render_start);
+                    self.render_cursor_col = self.cols.saturating_sub(1);
                 }
             }
-            // If this is the cursor's logical row and the cursor is at the very end
-            if !cursor_found && main_row_idx == self.cursor_row && self.cursor_col >= text_end {
-                visual_cursor_row = self.render_buffer.len() - 1;
-                let mut temp_col = 0;
-                let end_col = self.cursor_col.min(source_row.len());
-                for i in source_col..end_col {
-                    if i < source_row.len() {
-                        temp_col += source_row[i].ch.width().unwrap_or(1);
-                    }
-                }
-                visual_cursor_col = temp_col;
-                cursor_found = true;
-            }
+
+            // Always move to next main_buffer row after processing
+            main_buffer_idx += 1;
         }
 
-        // Final cursor position update
-        self.render_cursor_row = visual_cursor_row;
-        self.render_cursor_col = visual_cursor_col;
         self.render_buffer_dirty = false;
     }
 
@@ -305,14 +313,13 @@ impl TerminalState {
         self.cursor_col = 0;
         self.cursor_row += 1;
 
-        // Ensure cursor_row does not exceed main_buffer length
-        if self.cursor_row >= self.main_buffer.len() {
+        // Always add new line to main_buffer when cursor moves to new row
+        while self.cursor_row >= self.main_buffer.len() {
             self.main_buffer
                 .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
         }
 
-        // Both alt screen and main screen: use the same history management
-        // Alt screen apps (like top, vim) can handle their own scrolling
+        // History management: trim old lines if exceeds maximum
         while self.main_buffer.len() > MAX_HISTORY_LINES {
             self.main_buffer.pop_front();
             // Adjust cursor_row if it's affected by the removal
@@ -320,6 +327,7 @@ impl TerminalState {
                 self.cursor_row -= 1;
             }
         }
+
         self.mark_render_dirty();
     }
 

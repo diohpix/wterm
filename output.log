@@ -1,0 +1,261 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running `target/debug/wterm`
+🖥️ Initial estimated terminal size: 129x41 (967x656px)
+🖼️ Render buffer updated: 1 rows (from 1 main_buffer rows)
+🖼️ Render buffer updated: 1 rows (from 1 main_buffer rows)
+🎯 Initial focus set to terminal
+🚽 PTY Read (179 bytes): string: "                                                                                                                                                                                \r \r"
+🖼️ Render buffer updated: 1 rows (from 1 main_buffer rows)
+🚽 PTY Read (43 bytes): string: "\u{1b}]7;file://AL01599571.local/Users/xiphoid\u{1b}\\"
+🖥️ DEBUG: VTE osc_dispatch - bell_terminated: false, params: ["7", "file://AL01599571.local/Users/xiphoid"]
+🚽 PTY Read (46 bytes): string: "\r\u{1b}[0m\u{1b}[27m\u{1b}[24m\u{1b}[J\u{1b}[01;32m➜  \u{1b}[36m~\u{1b}[00m \u{1b}[K"
+🚽 PTY Read (7 bytes): string: "\u{1b}[?1h\u{1b}="
+🚽 PTY Read (8 bytes): string: "\u{1b}[?2004h"
+🖼️ Render buffer updated: 1 rows (from 1 main_buffer rows)
+🔍 Text event received: "l" (bytes: [108])
+✅ Text event: 'l'
+📤 DEBUG: Sending to PTY: "l" (bytes: [108])
+🚽 PTY Read (1 bytes): string: "l"
+🖼️ Render buffer updated: 1 rows (from 1 main_buffer rows)
+🔍 Text event received: "s" (bytes: [115])
+✅ Text event: 's'
+📤 DEBUG: Sending to PTY: "s" (bytes: [115])
+🚽 PTY Read (3 bytes): string: "\u{8}ls"
+🖼️ Render buffer updated: 1 rows (from 1 main_buffer rows)
+🔍 Text event received: " " (bytes: [32])
+⚠️ Space character in Text event!
+📤 DEBUG: Sending to PTY: " " (bytes: [32])
+🚽 PTY Read (1 bytes): string: " "
+🖼️ Render buffer updated: 1 rows (from 1 main_buffer rows)
+🔍 Text event received: "-" (bytes: [45])
+✅ Text event: '-'
+📤 DEBUG: Sending to PTY: "-" (bytes: [45])
+🚽 PTY Read (1 bytes): string: "-"
+🖼️ Render buffer updated: 1 rows (from 1 main_buffer rows)
+🔍 Text event received: "l" (bytes: [108])
+✅ Text event: 'l'
+📤 DEBUG: Sending to PTY: "l" (bytes: [108])
+🚽 PTY Read (1 bytes): string: "l"
+🖼️ Render buffer updated: 1 rows (from 1 main_buffer rows)
+📤 DEBUG: Sending to PTY: "\n" (bytes: [10])
+🚽 PTY Read (7 bytes): string: "\u{1b}[?1l\u{1b}>"
+🚽 PTY Read (11 bytes): string: "\u{1b}[?2004l\r\r\n"
+📊 Newline: cursor_row=1, main_buffer.len()=2, rows=55
+🖼️ Render buffer updated: 2 rows (from 2 main_buffer rows)
+🚽 PTY Read (9 bytes): string: "total 8\r\n"
+📊 Newline: cursor_row=2, main_buffer.len()=3, rows=55
+🚽 PTY Read (84 bytes): string: "drwx------@   5 xiphoid  staff   160  5  9  2023 \u{1b}[1m\u{1b}[36mApplications\u{1b}[39;49m\u{1b}[0m\r\n"
+📊 Newline: cursor_row=3, main_buffer.len()=4, rows=55
+🚽 PTY Read (1024 bytes): string: "drwxr-xr-x    3 xiphoid  staff    96  3 21 18:56 \u{1b}[1m\u{1b}[36mauto\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   21 xiphoid  staff   672  4 24 10:50 \u{1b}[1m\u{1b}[36mBitNet\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   22 xiphoid  staff   704  7 12  2023 \u{1b}[1m\u{1b}[36mcashflow\u{1b}[39;49m\u{1b}[0m\r\n-rw-r--r--    1 xiphoid  staff    55  4 10 17:44 data.json\r\ndrwx------@  40 xiphoid  staff  1280  8  1 22:04 \u{1b}[1m\u{1b}[36mDesktop\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   12 xiphoid  staff   384 11  7  2024 \u{1b}[1m\u{1b}[36mdevtool\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@   5 xiphoid  staff   160  5 21 11:27 \u{1b}[1m\u{1b}[36mDocuments\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@  30 xiphoid  staff   960  8  4 11:26 \u{1b}[1m\u{1b}[36mDownloads\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  3 12 15:29 \u{1b}[1m\u{1b}[36mextract\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  3 12 15:45 \u{1b}[1m\u{1b}[36mextract2\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  9 25  2024 \u{1b}[1m\u{1b}[36mgia\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   16 xiphoid  staff   512  7 28 12:36 \u{1b}[1m\u{1b}[36mgit\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  7 14 18:06 \u{1b}[1m\u{1b}[36mgo\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    3 xiphoid  st"
+📊 Newline: cursor_row=4, main_buffer.len()=5, rows=55
+📊 Newline: cursor_row=5, main_buffer.len()=6, rows=55
+📊 Newline: cursor_row=6, main_buffer.len()=7, rows=55
+📊 Newline: cursor_row=7, main_buffer.len()=8, rows=55
+📊 Newline: cursor_row=8, main_buffer.len()=9, rows=55
+📊 Newline: cursor_row=9, main_buffer.len()=10, rows=55
+📊 Newline: cursor_row=10, main_buffer.len()=11, rows=55
+📊 Newline: cursor_row=11, main_buffer.len()=12, rows=55
+📊 Newline: cursor_row=12, main_buffer.len()=13, rows=55
+📊 Newline: cursor_row=13, main_buffer.len()=14, rows=55
+📊 Newline: cursor_row=14, main_buffer.len()=15, rows=55
+📊 Newline: cursor_row=15, main_buffer.len()=16, rows=55
+📊 Newline: cursor_row=16, main_buffer.len()=17, rows=55
+🚽 PTY Read (1024 bytes): string: "aff    96 11  1  2022 \u{1b}[1m\u{1b}[36mIdeaProjects\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x@   2 xiphoid  staff    64  7 29 14:25 \u{1b}[1m\u{1b}[36mIdeaSnapshots\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@ 115 xiphoid  staff  3680  4  2 10:26 \u{1b}[1m\u{1b}[36mLibrary\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  7 16 15:53 \u{1b}[1m\u{1b}[36mmcp\u{1b}[39;49m\u{1b}[0m\r\ndrwx------    4 xiphoid  staff   128 11  2  2022 \u{1b}[1m\u{1b}[36mMovies\u{1b}[39;49m\u{1b}[0m\r\ndrwx------+   4 xiphoid  staff   128 12 10  2022 \u{1b}[1m\u{1b}[36mMusic\u{1b}[39;49m\u{1b}[0m\r\ndrwx------+   4 xiphoid  staff   128 11  1  2022 \u{1b}[1m\u{1b}[36mPictures\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x+   4 xiphoid  staff   128 11  1  2022 \u{1b}[1m\u{1b}[36mPublic\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   15 xiphoid  staff   480  3  7  2024 \u{1b}[1m\u{1b}[36msb\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x@  15 xiphoid  staff   480  4 21 12:05 \u{1b}[1m\u{1b}[36mSide scroller tutorial\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   17 xiphoid  staff   544  2 19 10:46 \u{1b}[1m\u{1b}[36mskm\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  3 26 18:02 \u{1b}[1m\u{1b}[36mtemp2\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   12 xiphoid  staff   384  7 16 17:01 \u{1b}[1m\u{1b}[36mtmp\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    3 xiph"
+📊 Newline: cursor_row=17, main_buffer.len()=18, rows=55
+📊 Newline: cursor_row=18, main_buffer.len()=19, rows=55
+📊 Newline: cursor_row=19, main_buffer.len()=20, rows=55
+📊 Newline: cursor_row=20, main_buffer.len()=21, rows=55
+📊 Newline: cursor_row=21, main_buffer.len()=22, rows=55
+📊 Newline: cursor_row=22, main_buffer.len()=23, rows=55
+📊 Newline: cursor_row=23, main_buffer.len()=24, rows=55
+📊 Newline: cursor_row=24, main_buffer.len()=25, rows=55
+📊 Newline: cursor_row=25, main_buffer.len()=26, rows=55
+📊 Newline: cursor_row=26, main_buffer.len()=27, rows=55
+📊 Newline: cursor_row=27, main_buffer.len()=28, rows=55
+📊 Newline: cursor_row=28, main_buffer.len()=29, rows=55
+📊 Newline: cursor_row=29, main_buffer.len()=30, rows=55
+🚽 PTY Read (235 bytes): string: "oid  staff    96  3 12 16:48 \u{1b}[1m\u{1b}[36mwork\u{1b}[39;49m\u{1b}[0m\r\n                                                                                                                                                                                \r \r"
+📊 Newline: cursor_row=30, main_buffer.len()=31, rows=55
+🖼️ Render buffer updated: 31 rows (from 31 main_buffer rows)
+🚽 PTY Read (43 bytes): string: "\u{1b}]7;file://AL01599571.local/Users/xiphoid\u{1b}\\"
+🖥️ DEBUG: VTE osc_dispatch - bell_terminated: false, params: ["7", "file://AL01599571.local/Users/xiphoid"]
+🚽 PTY Read (61 bytes): string: "\r\u{1b}[0m\u{1b}[27m\u{1b}[24m\u{1b}[J\u{1b}[01;32m➜  \u{1b}[36m~\u{1b}[00m \u{1b}[K\u{1b}[?1h\u{1b}=\u{1b}[?2004h"
+🖼️ Render buffer updated: 31 rows (from 31 main_buffer rows)
+🔍 Text event received: "l" (bytes: [108])
+✅ Text event: 'l'
+📤 DEBUG: Sending to PTY: "l" (bytes: [108])
+🚽 PTY Read (1 bytes): string: "l"
+🖼️ Render buffer updated: 31 rows (from 31 main_buffer rows)
+🔍 Text event received: "s" (bytes: [115])
+✅ Text event: 's'
+📤 DEBUG: Sending to PTY: "s" (bytes: [115])
+🚽 PTY Read (3 bytes): string: "\u{8}ls"
+🖼️ Render buffer updated: 31 rows (from 31 main_buffer rows)
+🔍 Text event received: " " (bytes: [32])
+⚠️ Space character in Text event!
+📤 DEBUG: Sending to PTY: " " (bytes: [32])
+🚽 PTY Read (1 bytes): string: " "
+🖼️ Render buffer updated: 31 rows (from 31 main_buffer rows)
+🔍 Text event received: "-" (bytes: [45])
+✅ Text event: '-'
+📤 DEBUG: Sending to PTY: "-" (bytes: [45])
+🚽 PTY Read (1 bytes): string: "-"
+🖼️ Render buffer updated: 31 rows (from 31 main_buffer rows)
+🔍 Text event received: "l" (bytes: [108])
+✅ Text event: 'l'
+📤 DEBUG: Sending to PTY: "l" (bytes: [108])
+🚽 PTY Read (1 bytes): string: "l"
+🖼️ Render buffer updated: 31 rows (from 31 main_buffer rows)
+📤 DEBUG: Sending to PTY: "\n" (bytes: [10])
+🚽 PTY Read (7 bytes): string: "\u{1b}[?1l\u{1b}>"
+🚽 PTY Read (11 bytes): string: "\u{1b}[?2004l\r\r\n"
+📊 Newline: cursor_row=31, main_buffer.len()=32, rows=55
+🖼️ Render buffer updated: 32 rows (from 32 main_buffer rows)
+🚽 PTY Read (9 bytes): string: "total 8\r\n"
+📊 Newline: cursor_row=32, main_buffer.len()=33, rows=55
+🚽 PTY Read (84 bytes): string: "drwx------@   5 xiphoid  staff   160  5  9  2023 \u{1b}[1m\u{1b}[36mApplications\u{1b}[39;49m\u{1b}[0m\r\n"
+📊 Newline: cursor_row=33, main_buffer.len()=34, rows=55
+🚽 PTY Read (997 bytes): string: "drwxr-xr-x    3 xiphoid  staff    96  3 21 18:56 \u{1b}[1m\u{1b}[36mauto\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   21 xiphoid  staff   672  4 24 10:50 \u{1b}[1m\u{1b}[36mBitNet\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   22 xiphoid  staff   704  7 12  2023 \u{1b}[1m\u{1b}[36mcashflow\u{1b}[39;49m\u{1b}[0m\r\n-rw-r--r--    1 xiphoid  staff    55  4 10 17:44 data.json\r\ndrwx------@  40 xiphoid  staff  1280  8  1 22:04 \u{1b}[1m\u{1b}[36mDesktop\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   12 xiphoid  staff   384 11  7  2024 \u{1b}[1m\u{1b}[36mdevtool\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@   5 xiphoid  staff   160  5 21 11:27 \u{1b}[1m\u{1b}[36mDocuments\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@  30 xiphoid  staff   960  8  4 11:26 \u{1b}[1m\u{1b}[36mDownloads\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  3 12 15:29 \u{1b}[1m\u{1b}[36mextract\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  3 12 15:45 \u{1b}[1m\u{1b}[36mextract2\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  9 25  2024 \u{1b}[1m\u{1b}[36mgia\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   16 xiphoid  staff   512  7 28 12:36 \u{1b}[1m\u{1b}[36mgit\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  7 14 18:06 \u{1b}[1m\u{1b}[36mgo\u{1b}[39;49m\u{1b}[0m\r\n"
+📊 Newline: cursor_row=34, main_buffer.len()=35, rows=55
+📊 Newline: cursor_row=35, main_buffer.len()=36, rows=55
+📊 Newline: cursor_row=36, main_buffer.len()=37, rows=55
+📊 Newline: cursor_row=37, main_buffer.len()=38, rows=55
+📊 Newline: cursor_row=38, main_buffer.len()=39, rows=55
+📊 Newline: cursor_row=39, main_buffer.len()=40, rows=55
+📊 Newline: cursor_row=40, main_buffer.len()=41, rows=55
+📊 Newline: cursor_row=41, main_buffer.len()=42, rows=55
+📊 Newline: cursor_row=42, main_buffer.len()=43, rows=55
+📊 Newline: cursor_row=43, main_buffer.len()=44, rows=55
+📊 Newline: cursor_row=44, main_buffer.len()=45, rows=55
+📊 Newline: cursor_row=45, main_buffer.len()=46, rows=55
+📊 Newline: cursor_row=46, main_buffer.len()=47, rows=55
+🚽 PTY Read (1024 bytes): string: "drwxr-xr-x    3 xiphoid  staff    96 11  1  2022 \u{1b}[1m\u{1b}[36mIdeaProjects\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x@   2 xiphoid  staff    64  7 29 14:25 \u{1b}[1m\u{1b}[36mIdeaSnapshots\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@ 115 xiphoid  staff  3680  4  2 10:26 \u{1b}[1m\u{1b}[36mLibrary\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  7 16 15:53 \u{1b}[1m\u{1b}[36mmcp\u{1b}[39;49m\u{1b}[0m\r\ndrwx------    4 xiphoid  staff   128 11  2  2022 \u{1b}[1m\u{1b}[36mMovies\u{1b}[39;49m\u{1b}[0m\r\ndrwx------+   4 xiphoid  staff   128 12 10  2022 \u{1b}[1m\u{1b}[36mMusic\u{1b}[39;49m\u{1b}[0m\r\ndrwx------+   4 xiphoid  staff   128 11  1  2022 \u{1b}[1m\u{1b}[36mPictures\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x+   4 xiphoid  staff   128 11  1  2022 \u{1b}[1m\u{1b}[36mPublic\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   15 xiphoid  staff   480  3  7  2024 \u{1b}[1m\u{1b}[36msb\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x@  15 xiphoid  staff   480  4 21 12:05 \u{1b}[1m\u{1b}[36mSide scroller tutorial\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   17 xiphoid  staff   544  2 19 10:46 \u{1b}[1m\u{1b}[36mskm\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  3 26 18:02 \u{1b}[1m\u{1b}[36mtemp2\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   12 xiphoid  staff   384  7 16 17:01 \u{1b}[1m\u{1b}[36mtmp\u{1b}[39;49"
+📊 Newline: cursor_row=47, main_buffer.len()=48, rows=55
+📊 Newline: cursor_row=48, main_buffer.len()=49, rows=55
+📊 Newline: cursor_row=49, main_buffer.len()=50, rows=55
+📊 Newline: cursor_row=50, main_buffer.len()=51, rows=55
+📊 Newline: cursor_row=51, main_buffer.len()=52, rows=55
+📊 Newline: cursor_row=52, main_buffer.len()=53, rows=55
+📊 Newline: cursor_row=53, main_buffer.len()=54, rows=55
+📊 Newline: cursor_row=54, main_buffer.len()=55, rows=55
+📊 Newline: cursor_row=55, main_buffer.len()=56, rows=55
+📊 Newline: cursor_row=56, main_buffer.len()=57, rows=55
+📊 Newline: cursor_row=57, main_buffer.len()=58, rows=55
+📊 Newline: cursor_row=58, main_buffer.len()=59, rows=55
+🚽 PTY Read (262 bytes): string: "m\u{1b}[0m\r\ndrwxr-xr-x    3 xiphoid  staff    96  3 12 16:48 \u{1b}[1m\u{1b}[36mwork\u{1b}[39;49m\u{1b}[0m\r\n                                                                                                                                                                                \r \r"
+📊 Newline: cursor_row=59, main_buffer.len()=60, rows=55
+📊 Newline: cursor_row=60, main_buffer.len()=61, rows=55
+🖼️ Render buffer updated: 55 rows (from 61 main_buffer rows)
+🚽 PTY Read (43 bytes): string: "\u{1b}]7;file://AL01599571.local/Users/xiphoid\u{1b}\\"
+🖥️ DEBUG: VTE osc_dispatch - bell_terminated: false, params: ["7", "file://AL01599571.local/Users/xiphoid"]
+🚽 PTY Read (61 bytes): string: "\r\u{1b}[0m\u{1b}[27m\u{1b}[24m\u{1b}[J\u{1b}[01;32m➜  \u{1b}[36m~\u{1b}[00m \u{1b}[K\u{1b}[?1h\u{1b}=\u{1b}[?2004h"
+🖼️ Render buffer updated: 55 rows (from 61 main_buffer rows)
+🔍 Text event received: "l" (bytes: [108])
+✅ Text event: 'l'
+📤 DEBUG: Sending to PTY: "l" (bytes: [108])
+🚽 PTY Read (1 bytes): string: "l"
+🖼️ Render buffer updated: 55 rows (from 61 main_buffer rows)
+🔍 Text event received: "s" (bytes: [115])
+✅ Text event: 's'
+📤 DEBUG: Sending to PTY: "s" (bytes: [115])
+🚽 PTY Read (3 bytes): string: "\u{8}ls"
+🖼️ Render buffer updated: 55 rows (from 61 main_buffer rows)
+🔍 Text event received: " " (bytes: [32])
+⚠️ Space character in Text event!
+📤 DEBUG: Sending to PTY: " " (bytes: [32])
+🚽 PTY Read (1 bytes): string: " "
+🖼️ Render buffer updated: 55 rows (from 61 main_buffer rows)
+🔍 Text event received: "-" (bytes: [45])
+✅ Text event: '-'
+📤 DEBUG: Sending to PTY: "-" (bytes: [45])
+🚽 PTY Read (1 bytes): string: "-"
+🖼️ Render buffer updated: 55 rows (from 61 main_buffer rows)
+🔍 Text event received: "l" (bytes: [108])
+✅ Text event: 'l'
+📤 DEBUG: Sending to PTY: "l" (bytes: [108])
+🚽 PTY Read (1 bytes): string: "l"
+🖼️ Render buffer updated: 55 rows (from 61 main_buffer rows)
+📤 DEBUG: Sending to PTY: "\n" (bytes: [10])
+🚽 PTY Read (7 bytes): string: "\u{1b}[?1l\u{1b}>"
+🚽 PTY Read (11 bytes): string: "\u{1b}[?2004l\r\r\n"
+📊 Newline: cursor_row=61, main_buffer.len()=62, rows=55
+🖼️ Render buffer updated: 55 rows (from 62 main_buffer rows)
+🚽 PTY Read (9 bytes): string: "total 8\r\n"
+📊 Newline: cursor_row=62, main_buffer.len()=63, rows=55
+🚽 PTY Read (1024 bytes): string: "drwx------@   5 xiphoid  staff   160  5  9  2023 \u{1b}[1m\u{1b}[36mApplications\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    3 xiphoid  staff    96  3 21 18:56 \u{1b}[1m\u{1b}[36mauto\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   21 xiphoid  staff   672  4 24 10:50 \u{1b}[1m\u{1b}[36mBitNet\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   22 xiphoid  staff   704  7 12  2023 \u{1b}[1m\u{1b}[36mcashflow\u{1b}[39;49m\u{1b}[0m\r\n-rw-r--r--    1 xiphoid  staff    55  4 10 17:44 data.json\r\ndrwx------@  40 xiphoid  staff  1280  8  1 22:04 \u{1b}[1m\u{1b}[36mDesktop\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   12 xiphoid  staff   384 11  7  2024 \u{1b}[1m\u{1b}[36mdevtool\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@   5 xiphoid  staff   160  5 21 11:27 \u{1b}[1m\u{1b}[36mDocuments\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@  30 xiphoid  staff   960  8  4 11:26 \u{1b}[1m\u{1b}[36mDownloads\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  3 12 15:29 \u{1b}[1m\u{1b}[36mextract\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  3 12 15:45 \u{1b}[1m\u{1b}[36mextract2\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    5 xiphoid  staff   160  9 25  2024 \u{1b}[1m\u{1b}[36mgia\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   16 xiphoid  staff   512  7 28 12:36 \u{1b}[1m\u{1b}[36mgit\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 x"
+📊 Newline: cursor_row=63, main_buffer.len()=64, rows=55
+📊 Newline: cursor_row=64, main_buffer.len()=65, rows=55
+📊 Newline: cursor_row=65, main_buffer.len()=66, rows=55
+📊 Newline: cursor_row=66, main_buffer.len()=67, rows=55
+📊 Newline: cursor_row=67, main_buffer.len()=68, rows=55
+📊 Newline: cursor_row=68, main_buffer.len()=69, rows=55
+📊 Newline: cursor_row=69, main_buffer.len()=70, rows=55
+📊 Newline: cursor_row=70, main_buffer.len()=71, rows=55
+📊 Newline: cursor_row=71, main_buffer.len()=72, rows=55
+📊 Newline: cursor_row=72, main_buffer.len()=73, rows=55
+📊 Newline: cursor_row=73, main_buffer.len()=74, rows=55
+📊 Newline: cursor_row=74, main_buffer.len()=75, rows=55
+📊 Newline: cursor_row=75, main_buffer.len()=76, rows=55
+🚽 PTY Read (1024 bytes): string: "iphoid  staff   128  7 14 18:06 \u{1b}[1m\u{1b}[36mgo\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    3 xiphoid  staff    96 11  1  2022 \u{1b}[1m\u{1b}[36mIdeaProjects\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x@   2 xiphoid  staff    64  7 29 14:25 \u{1b}[1m\u{1b}[36mIdeaSnapshots\u{1b}[39;49m\u{1b}[0m\r\ndrwx------@ 115 xiphoid  staff  3680  4  2 10:26 \u{1b}[1m\u{1b}[36mLibrary\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  7 16 15:53 \u{1b}[1m\u{1b}[36mmcp\u{1b}[39;49m\u{1b}[0m\r\ndrwx------    4 xiphoid  staff   128 11  2  2022 \u{1b}[1m\u{1b}[36mMovies\u{1b}[39;49m\u{1b}[0m\r\ndrwx------+   4 xiphoid  staff   128 12 10  2022 \u{1b}[1m\u{1b}[36mMusic\u{1b}[39;49m\u{1b}[0m\r\ndrwx------+   4 xiphoid  staff   128 11  1  2022 \u{1b}[1m\u{1b}[36mPictures\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x+   4 xiphoid  staff   128 11  1  2022 \u{1b}[1m\u{1b}[36mPublic\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   15 xiphoid  staff   480  3  7  2024 \u{1b}[1m\u{1b}[36msb\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x@  15 xiphoid  staff   480  4 21 12:05 \u{1b}[1m\u{1b}[36mSide scroller tutorial\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x   17 xiphoid  staff   544  2 19 10:46 \u{1b}[1m\u{1b}[36mskm\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    4 xiphoid  staff   128  3 26 18:02 \u{1b}[1m\u{1b}[36mtemp2\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x "
+📊 Newline: cursor_row=76, main_buffer.len()=77, rows=55
+📊 Newline: cursor_row=77, main_buffer.len()=78, rows=55
+📊 Newline: cursor_row=78, main_buffer.len()=79, rows=55
+📊 Newline: cursor_row=79, main_buffer.len()=80, rows=55
+📊 Newline: cursor_row=80, main_buffer.len()=81, rows=55
+📊 Newline: cursor_row=81, main_buffer.len()=82, rows=55
+📊 Newline: cursor_row=82, main_buffer.len()=83, rows=55
+📊 Newline: cursor_row=83, main_buffer.len()=84, rows=55
+📊 Newline: cursor_row=84, main_buffer.len()=85, rows=55
+📊 Newline: cursor_row=85, main_buffer.len()=86, rows=55
+📊 Newline: cursor_row=86, main_buffer.len()=87, rows=55
+📊 Newline: cursor_row=87, main_buffer.len()=88, rows=55
+📊 Newline: cursor_row=88, main_buffer.len()=89, rows=55
+🚽 PTY Read (319 bytes): string: "  12 xiphoid  staff   384  7 16 17:01 \u{1b}[1m\u{1b}[36mtmp\u{1b}[39;49m\u{1b}[0m\r\ndrwxr-xr-x    3 xiphoid  staff    96  3 12 16:48 \u{1b}[1m\u{1b}[36mwork\u{1b}[39;49m\u{1b}[0m\r\n                                                                                                                                                                                \r \r"
+📊 Newline: cursor_row=89, main_buffer.len()=90, rows=55
+📊 Newline: cursor_row=90, main_buffer.len()=91, rows=55
+🖼️ Render buffer updated: 55 rows (from 91 main_buffer rows)
+🚽 PTY Read (43 bytes): string: "\u{1b}]7;file://AL01599571.local/Users/xiphoid\u{1b}\\"
+🖥️ DEBUG: VTE osc_dispatch - bell_terminated: false, params: ["7", "file://AL01599571.local/Users/xiphoid"]
+🚽 PTY Read (61 bytes): string: "\r\u{1b}[0m\u{1b}[27m\u{1b}[24m\u{1b}[J\u{1b}[01;32m➜  \u{1b}[36m~\u{1b}[00m \u{1b}[K\u{1b}[?1h\u{1b}=\u{1b}[?2004h"
+🖼️ Render buffer updated: 55 rows (from 91 main_buffer rows)
+🔍 Text event received: "s" (bytes: [115])
+✅ Text event: 's'
+📤 DEBUG: Sending to PTY: "s" (bytes: [115])
+🚽 PTY Read (1 bytes): string: "s"
+🖼️ Render buffer updated: 55 rows (from 91 main_buffer rows)
+🔍 Text event received: "l" (bytes: [108])
+✅ Text event: 'l'
+📤 DEBUG: Sending to PTY: "l" (bytes: [108])
+🚽 PTY Read (3 bytes): string: "\u{8}sl"
+🖼️ Render buffer updated: 55 rows (from 91 main_buffer rows)
+🔍 Text event received: " " (bytes: [32])
+⚠️ Space character in Text event!
+📤 DEBUG: Sending to PTY: " " (bytes: [32])
+🚽 PTY Read (1 bytes): string: " "
+🖼️ Render buffer updated: 55 rows (from 91 main_buffer rows)
+🔍 Text event received: "-" (bytes: [45])
+✅ Text event: '-'
+📤 DEBUG: Sending to PTY: "-" (bytes: [45])
+🚽 PTY Read (1 bytes): string: "-"
+🖼️ Render buffer updated: 55 rows (from 91 main_buffer rows)
+🔍 Text event received: "l" (bytes: [108])
+✅ Text event: 'l'
+📤 DEBUG: Sending to PTY: "l" (bytes: [108])
+🚽 PTY Read (1 bytes): string: "l"
+🖼️ Render buffer updated: 55 rows (from 91 main_buffer rows)
+📤 DEBUG: Sending to PTY: "\n" (bytes: [10])
+🚽 PTY Read (7 bytes): string: "\u{1b}[?1l\u{1b}>"
+🚽 PTY Read (8 bytes): string: "\u{1b}[?2004l"
+🚽 PTY Read (3 bytes): string: "\r\r\n"
+📊 Newline: cursor_row=91, main_buffer.len()=92, rows=55
+🚽 PTY Read (28 bytes): string: "zsh: command not found: sl\r\n"
+📊 Newline: cursor_row=92, main_buffer.len()=93, rows=55
+🚽 PTY Read (179 bytes): string: "                                                                                                                                                                                \r \r"
+🖼️ Render buffer updated: 55 rows (from 93 main_buffer rows)
+🚽 PTY Read (43 bytes): string: "\u{1b}]7;file://AL01599571.local/Users/xiphoid\u{1b}\\"
+🖥️ DEBUG: VTE osc_dispatch - bell_terminated: false, params: ["7", "file://AL01599571.local/Users/xiphoid"]
+🚽 PTY Read (61 bytes): string: "\r\u{1b}[0m\u{1b}[27m\u{1b}[24m\u{1b}[J\u{1b}[01;31m➜  \u{1b}[36m~\u{1b}[00m \u{1b}[K\u{1b}[?1h\u{1b}=\u{1b}[?2004h"
+🖼️ Render buffer updated: 55 rows (from 93 main_buffer rows)
+🚽 PTY Read (7 bytes): string: "\u{1b}[?1l\u{1b}>"
+🚽 PTY Read (11 bytes): string: "\u{1b}[?2004l\r\r\n"
+📊 Newline: cursor_row=93, main_buffer.len()=94, rows=55
