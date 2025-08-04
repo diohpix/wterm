@@ -52,7 +52,7 @@ impl TerminalApp {
 
     // Process Korean character input and return completed character if any
     fn process_korean_char(&mut self, ch: char) -> Option<char> {
-        println!("🔤 Processing Korean char: '{}' (U+{:04X})", ch, ch as u32);
+        // println!("🔤 Processing Korean char: '{}' (U+{:04X})", ch, ch as u32); // Disabled for performance
         if crate::ime::korean::is_consonant(ch) {
             if self.korean_state.chosung.is_none() {
                 // First consonant - set as chosung, start composing
@@ -71,9 +71,9 @@ impl TerminalApp {
                 } else {
                     // Can't combine - complete current syllable and start new one
                     let completed = self.korean_state.get_current_char();
-                    if let Some(c) = completed {
-                        println!("✅ Completing syllable (consonant can't combine): '{}'", c);
-                    }
+                    // if let Some(c) = completed {
+                    //     println!("✅ Completing syllable (consonant can't combine): '{}'", c);
+                    // }
                     self.korean_state.reset();
                     self.korean_state.chosung = Some(ch);
                     self.korean_state.is_composing = true;
@@ -123,9 +123,9 @@ impl TerminalApp {
                     } else {
                         // Can't combine - complete current syllable
                         let completed = self.korean_state.get_current_char();
-                        if let Some(c) = completed {
-                            println!("✅ Completing syllable (vowel can't combine): '{}'", c);
-                        }
+                        // if let Some(c) = completed {
+                        //     println!("✅ Completing syllable (vowel can't combine): '{}'", c);
+                        // }
                         self.korean_state.reset();
                         // Vowel can't start a new syllable without consonant, so just send it
                         return completed;
@@ -144,22 +144,21 @@ impl TerminalApp {
     fn finalize_korean_composition(&mut self) {
         if self.korean_state.is_composing {
             if let Some(completed) = self.korean_state.get_current_char() {
-                println!("🏁 Finalizing Korean composition: '{}'", completed);
+                // println!("🏁 Finalizing Korean composition: '{}'", completed); // Disabled for performance
                 self.send_to_pty(&completed.to_string());
             }
             self.korean_state.reset();
         }
     }
 
-
     // Helper function to send text to PTY
     fn send_to_pty(&mut self, text: &str) {
-        println!(
-            "📤 DEBUG: Sending to PTY: {:?} (bytes: {:?})",
-            text,
-            text.as_bytes()
-        );
-        
+        // println!(
+        //     "📤 DEBUG: Sending to PTY: {:?} (bytes: {:?})",
+        //     text,
+        //     text.as_bytes()
+        // ); // Disabled for performance
+
         if let Ok(mut writer) = self.pty_writer.lock() {
             let _ = writer.write_all(text.as_bytes());
             let _ = writer.flush();
@@ -273,11 +272,11 @@ impl TerminalApp {
                     Ok(n) => {
                         let read_data = &buffer[..n];
 
-                        println!(
+                        /*    println!(
                             "🚽 PTY Read ({} bytes): string: \"{}\"",
                             n,
                             String::from_utf8_lossy(read_data).escape_debug()
-                        );
+                        );*/
 
                         // Process all bytes at once using VTE 0.15 API
                         parser.advance(&mut performer, read_data);
@@ -539,10 +538,10 @@ impl eframe::App for TerminalApp {
                     {
                         let cursor_x =
                             response.rect.left() + state.render_cursor_col as f32 * char_width;
-                        
+
                         if self.korean_state.is_composing {
-                            println!("📍 Cursor position: row={}, col={}, x={}, y={}", 
-                                state.render_cursor_row, state.render_cursor_col, cursor_x, cursor_y);
+                            // println!("📍 Cursor position: row={}, col={}, x={}, y={}",
+                            //     state.render_cursor_row, state.render_cursor_col, cursor_x, cursor_y);
                         }
                         if state.cursor_visible && !self.korean_state.is_composing {
                             let cursor_line_y = cursor_y + line_height - 2.0;
@@ -570,13 +569,14 @@ impl eframe::App for TerminalApp {
                                 // Calculate precise cursor X position by walking through the row (like e32f82d)
                                 // This ensures accurate positioning regardless of render_buffer update timing
                                 let mut preview_x = response.rect.left();
-                                
-                                let cursor_row_data = if state.cursor_row < state.main_buffer.len() {
+
+                                let cursor_row_data = if state.cursor_row < state.main_buffer.len()
+                                {
                                     Some(&state.main_buffer[state.cursor_row])
                                 } else {
                                     None
                                 };
-                                
+
                                 // Walk through the row to calculate precise cursor position
                                 if let Some(row) = cursor_row_data {
                                     for cell_idx in 0..state.cursor_col.min(row.len()) {
@@ -584,21 +584,22 @@ impl eframe::App for TerminalApp {
                                         if cell.ch == '\u{0000}' {
                                             continue;
                                         }
-                                        
+
                                         // Calculate display width like e32f82d
-                                        let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
-                                            2 // Korean and other wide characters are 2 units
-                                        } else {
-                                            1 // All other characters are 1 unit
-                                        };
+                                        let char_display_width =
+                                            if cell.ch.width().unwrap_or(1) == 2 {
+                                                2 // Korean and other wide characters are 2 units
+                                            } else {
+                                                1 // All other characters are 1 unit
+                                            };
                                         preview_x += char_display_width as f32 * char_width;
                                     }
                                 }
-                                
+
                                 let preview_y = cursor_y;
-                                
-                                println!("🎯 Composing preview at: cursor_col={}, calculated_x={}, y={} for char '{}' (using e32f82d method)", 
-                                    state.cursor_col, preview_x, preview_y, composing_char);
+
+                                // println!("🎯 Composing preview at: cursor_col={}, calculated_x={}, y={} for char '{}' (using e32f82d method)",
+                                //     state.cursor_col, preview_x, preview_y, composing_char);
 
                                 // Draw composing character with a different color (gray/dimmed) to show it's temporary
                                 let preview_color = egui::Color32::from_rgb(150, 150, 150); // Gray preview color
@@ -788,7 +789,8 @@ impl eframe::App for TerminalApp {
                                         // Handle backspace for Korean composition
                                         if self.korean_state.is_composing {
                                             // Step-by-step Korean composition backspace (Korean IME only, no PTY)
-                                            let _still_composing = self.korean_state.handle_backspace();
+                                            let _still_composing =
+                                                self.korean_state.handle_backspace();
                                             // Korean composition is purely local - don't send to PTY
                                         } else {
                                             // For regular backspace, let shell handle everything
@@ -833,7 +835,9 @@ impl eframe::App for TerminalApp {
                                                 let mut text_end = 0;
 
                                                 // Use the visual row from the render_buffer for cursor movement logic
-                                                let row = if state.render_cursor_row < state.render_buffer.len() {
+                                                let row = if state.render_cursor_row
+                                                    < state.render_buffer.len()
+                                                {
                                                     &state.render_buffer[state.render_cursor_row]
                                                 } else {
                                                     continue;
@@ -881,7 +885,9 @@ impl eframe::App for TerminalApp {
                                                 // Find prompt end to limit leftward movement
                                                 let mut prompt_end = 0;
 
-                                                let row = if state.render_cursor_row < state.render_buffer.len() {
+                                                let row = if state.render_cursor_row
+                                                    < state.render_buffer.len()
+                                                {
                                                     &state.render_buffer[state.render_cursor_row]
                                                 } else {
                                                     return;
@@ -1038,21 +1044,21 @@ impl eframe::App for TerminalApp {
                                 }
                             }
                             egui::Event::Text(text) => {
-                                // Debug: Log what text events we receive
-                                println!("🔍 Text event received: {:?} (bytes: {:?})", text, text.as_bytes());
+                                // Debug: Log what text events we receive (disabled for performance)
+                                // println!("🔍 Text event received: {:?} (bytes: {:?})", text, text.as_bytes());
                                 for ch in text.chars() {
                                     if ch == '\t' {
-                                        println!("⚠️ Tab character received in Text event (already handled above)");
+                                        // println!("⚠️ Tab character received in Text event (already handled above)");
                                         return; // Don't process as regular text - already handled above
                                     } else if ch == '\n' || ch == '\r' {
-                                        println!("⚠️ Newline/Return character received in Text event (potential duplication!): U+{:04X}", ch as u32);
+                                        // println!("⚠️ Newline/Return character received in Text event (potential duplication!): U+{:04X}", ch as u32);
                                         return; // Don't process as regular text - already handled above
                                     } else if ch == ' ' {
-                                        println!("⚠️ Space character in Text event!");
+                                        // println!("⚠️ Space character in Text event!");
                                     } else if ch.is_ascii_graphic() {
-                                        println!("✅ Text event: '{}'", ch);
+                                        // println!("✅ Text event: '{}'", ch);
                                     } else {
-                                        println!("❓ Text event: U+{:04X} ({})", ch as u32, ch);
+                                        // println!("❓ Text event: U+{:04X} ({})", ch as u32, ch);
                                     }
                                 }
                                 // Use new IME-aware text processing
@@ -1063,8 +1069,6 @@ impl eframe::App for TerminalApp {
                     }
                 });
             }
-
-
         });
     }
 }

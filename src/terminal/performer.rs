@@ -20,15 +20,15 @@ impl TerminalPerformer {
             state,
             egui_ctx,
             last_repaint_time: Instant::now(),
-            repaint_interval: Duration::from_millis(8), // ~120fps limit for more responsive updates
-            initial_repaints: 0,                        // Start counting initial repaints
+            repaint_interval: Duration::from_millis(33), // ~30fps limit for much better performance
+            initial_repaints: 0,                         // Start counting initial repaints
         }
     }
 
     // Request repaint only if enough time has passed (throttled)
     fn request_repaint_throttled(&mut self) {
-        // Skip throttling for the first many repaints to ensure immediate initial rendering
-        if self.initial_repaints < 50 {
+        // Skip throttling for the first few repaints to ensure immediate initial rendering
+        if self.initial_repaints < 10 {
             self.egui_ctx.request_repaint();
             self.initial_repaints += 1;
             self.last_repaint_time = Instant::now();
@@ -36,7 +36,19 @@ impl TerminalPerformer {
         }
 
         let now = Instant::now();
-        if now.duration_since(self.last_repaint_time) >= self.repaint_interval {
+        let elapsed = now.duration_since(self.last_repaint_time);
+
+        // Use adaptive throttling - if we're getting lots of output, throttle more aggressively
+        let throttle_interval = if elapsed < Duration::from_millis(5) {
+            // Very frequent updates - throttle extremely aggressively for performance
+            Duration::from_millis(200) // ~5fps for extremely heavy output
+        } else if elapsed < Duration::from_millis(16) {
+            Duration::from_millis(100) // ~10fps for heavy output
+        } else {
+            self.repaint_interval // Normal throttling
+        };
+
+        if elapsed >= throttle_interval {
             self.egui_ctx.request_repaint();
             self.last_repaint_time = now;
         }
@@ -108,21 +120,18 @@ impl Perform for TerminalPerformer {
                 }
                 b'\x84' => {
                     // IND (Index) - Move cursor down one line, scroll if at bottom
-                    println!("🔄 IND: Index - moving cursor down with scroll");
                     state.index_down();
                     changed = true;
                     immediate = true;
                 }
                 b'\x85' => {
                     // NEL (Next Line) - Move to beginning of next line, scroll if at bottom
-                    println!("🔄 NEL: Next Line - moving to next line start with scroll");
                     state.next_line();
                     changed = true;
                     immediate = true;
                 }
                 b'\x8D' => {
                     // RI (Reverse Index) - Move cursor up one line, scroll if at top
-                    println!("🔄 RI: Reverse Index - moving cursor up with scroll");
                     state.reverse_index();
                     changed = true;
                     immediate = true;
@@ -157,14 +166,14 @@ impl Perform for TerminalPerformer {
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
-        println!(
-            "🖥️ DEBUG: VTE osc_dispatch - bell_terminated: {}, params: {:?}",
-            bell_terminated,
-            params
-                .iter()
-                .map(|p| String::from_utf8_lossy(p))
-                .collect::<Vec<_>>()
-        );
+        // println!(
+        //     "🖥️ DEBUG: VTE osc_dispatch - bell_terminated: {}, params: {:?}",
+        //     bell_terminated,
+        //     params
+        //         .iter()
+        //         .map(|p| String::from_utf8_lossy(p))
+        //         .collect::<Vec<_>>()
+        // );
         // No-op
     }
 
@@ -688,13 +697,11 @@ impl Perform for TerminalPerformer {
                 }
                 b'D' => {
                     // IND (Index) - ESC D: Move cursor down one line, scroll if at bottom
-                    println!("🔄 ESC D: Index - moving cursor down with scroll");
                     state.index_down();
                     changed = true;
                 }
                 b'M' => {
                     // RI (Reverse Index) - ESC M: Move cursor up one line, scroll if at top
-                    println!("🔄 ESC M: Reverse Index - moving cursor up with scroll");
                     state.reverse_index();
                     changed = true;
                 }

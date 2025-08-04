@@ -274,7 +274,8 @@ impl TerminalState {
     }
 
     pub fn put_char(&mut self, ch: char) {
-        self.clear_arrow_key_protection();
+        // Skip frequent arrow key protection clearing for performance
+        // self.clear_arrow_key_protection();
         let char_width = ch.width().unwrap_or(1);
 
         // Ensure row exists in main_buffer
@@ -283,8 +284,8 @@ impl TerminalState {
                 .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
         }
 
-        // Check if cursor moved beyond visible area and auto-scroll if needed
-        self.auto_scroll_if_needed();
+        // Skip frequent auto-scroll checks for performance - let newline handle it
+        // self.auto_scroll_if_needed();
 
         // Additional safety check
         if self.cursor_row >= self.main_buffer.len() {
@@ -332,8 +333,10 @@ impl TerminalState {
                 .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
         }
 
-        // Check if cursor moved beyond visible area and auto-scroll if needed
-        self.auto_scroll_if_needed();
+        // Only auto-scroll every 10 lines for better performance during heavy output
+        if self.cursor_row % 10 == 0 {
+            self.auto_scroll_if_needed();
+        }
 
         // History management: trim old lines if exceeds maximum
         while self.main_buffer.len() > MAX_HISTORY_LINES {
@@ -585,11 +588,12 @@ impl TerminalState {
         } else {
             // In normal mode, simply ensure buffer grows as needed
             // The render system will automatically show the bottom part of the buffer
-            println!(
-                "🔄 Normal mode: cursor at row {}, buffer size {}",
-                self.cursor_row,
-                self.main_buffer.len()
-            );
+            // Debug output disabled for performance during large outputs
+            // println!(
+            //     "🔄 Normal mode: cursor at row {}, buffer size {}",
+            //     self.cursor_row,
+            //     self.main_buffer.len()
+            // );
         }
     }
 
