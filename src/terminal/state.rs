@@ -82,6 +82,10 @@ pub struct TerminalState {
 
     // Backup for main buffer when switching to alt screen
     pub main_buffer_backup: Option<VecDeque<Vec<TerminalCell>>>,
+
+    // Scrolling region (DECSTBM)
+    pub scroll_region_top: usize, // Top line of scrolling region (0-based)
+    pub scroll_region_bottom: usize, // Bottom line of scrolling region (0-based)
 }
 
 impl TerminalState {
@@ -222,6 +226,8 @@ impl TerminalState {
             saved_cursor_alt: (0, 0),
             cursor_visible: true,
             main_buffer_backup: None,
+            scroll_region_top: 0,
+            scroll_region_bottom: rows - 1,
         };
         state.update_render_buffer();
         state
@@ -261,6 +267,10 @@ impl TerminalState {
         }
 
         self.cursor_row = self.cursor_row.min(self.main_buffer.len() - 1);
+
+        // Update scroll region to match new terminal size
+        self.scroll_region_top = 0;
+        self.scroll_region_bottom = new_rows - 1;
     }
 
     pub fn put_char(&mut self, ch: char) {
@@ -272,6 +282,9 @@ impl TerminalState {
             self.main_buffer
                 .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
         }
+
+        // Check if cursor moved beyond visible area and auto-scroll if needed
+        self.auto_scroll_if_needed();
 
         // Additional safety check
         if self.cursor_row >= self.main_buffer.len() {
@@ -318,6 +331,9 @@ impl TerminalState {
             self.main_buffer
                 .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
         }
+
+        // Check if cursor moved beyond visible area and auto-scroll if needed
+        self.auto_scroll_if_needed();
 
         // History management: trim old lines if exceeds maximum
         while self.main_buffer.len() > MAX_HISTORY_LINES {
@@ -428,5 +444,211 @@ impl TerminalState {
             println!("🔄 Restored main screen buffer");
             self.mark_render_dirty();
         }
+    }
+
+    // Set scrolling region (DECSTBM - DEC Set Top and Bottom Margins)
+    pub fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        // Convert from 1-based to 0-based indexing
+        let top = if top > 0 { top - 1 } else { 0 };
+        let bottom = if bottom > 0 {
+            bottom - 1
+        } else {
+            self.rows - 1
+        };
+
+        // Validate bounds
+        if top < self.rows && bottom < self.rows && top <= bottom {
+            self.scroll_region_top = top;
+            self.scroll_region_bottom = bottom;
+
+            // Move cursor to top-left of scrolling region (as per VT100 spec)
+            self.cursor_row = self.main_buffer.len().saturating_sub(self.rows) + top;
+            self.cursor_col = 0;
+
+            println!("📜 Set scroll region: top={}, bottom={}", top, bottom);
+        } else {
+            // Reset to full screen if invalid parameters
+            self.scroll_region_top = 0;
+            self.scroll_region_bottom = self.rows - 1;
+            self.cursor_row = self.main_buffer.len().saturating_sub(self.rows);
+            self.cursor_col = 0;
+
+            println!("📜 Reset scroll region to full screen");
+        }
+        self.mark_render_dirty();
+    }
+
+    // Scroll up within the scrolling region (SU - Scroll Up)
+    pub fn scroll_up_in_region(&mut self, lines: usize) {
+        let lines = if lines == 0 { 1 } else { lines };
+
+        for _ in 0..lines {
+            // Calculate absolute positions in main_buffer
+            let buffer_offset = self.main_buffer.len().saturating_sub(self.rows);
+            let top_abs = buffer_offset + self.scroll_region_top;
+            let bottom_abs = buffer_offset + self.scroll_region_bottom;
+
+            // Ensure we have enough buffer space
+            while self.main_buffer.len() <= bottom_abs {
+                self.main_buffer
+                    .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
+            }
+
+            // Remove the top line of the scrolling region
+            if top_abs < self.main_buffer.len() {
+                self.main_buffer.remove(top_abs);
+            }
+
+            // Add a new blank line at the bottom of the scrolling region
+            let new_line = vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS];
+            if bottom_abs < self.main_buffer.len() {
+                self.main_buffer.insert(bottom_abs, new_line);
+            } else {
+                self.main_buffer.push_back(new_line);
+            }
+        }
+
+        println!("📜 Scrolled up {} lines in region", lines);
+        self.mark_render_dirty();
+    }
+
+    // Scroll down within the scrolling region (SD - Scroll Down)
+    pub fn scroll_down_in_region(&mut self, lines: usize) {
+        let lines = if lines == 0 { 1 } else { lines };
+
+        for _ in 0..lines {
+            // Calculate absolute positions in main_buffer
+            let buffer_offset = self.main_buffer.len().saturating_sub(self.rows);
+            let top_abs = buffer_offset + self.scroll_region_top;
+            let bottom_abs = buffer_offset + self.scroll_region_bottom;
+
+            // Ensure we have enough buffer space
+            while self.main_buffer.len() <= bottom_abs {
+                self.main_buffer
+                    .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
+            }
+
+            // Remove the bottom line of the scrolling region
+            if bottom_abs < self.main_buffer.len() {
+                self.main_buffer.remove(bottom_abs);
+            }
+
+            // Add a new blank line at the top of the scrolling region
+            let new_line = vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS];
+            self.main_buffer.insert(top_abs, new_line);
+        }
+
+        println!("📜 Scrolled down {} lines in region", lines);
+        self.mark_render_dirty();
+    }
+
+    // Auto-scroll to keep cursor in visible area
+    pub fn auto_scroll_if_needed(&mut self) {
+        if self.is_alt_screen {
+            // In alt-screen mode (vi, less, etc.), use scrolling region
+            let screen_start = self.main_buffer.len().saturating_sub(self.rows);
+            let cursor_screen_row = self.cursor_row.saturating_sub(screen_start);
+
+            // If cursor is beyond the bottom of the scrolling region, scroll up
+            if cursor_screen_row > self.scroll_region_bottom {
+                let lines_to_scroll = cursor_screen_row - self.scroll_region_bottom;
+                for _ in 0..lines_to_scroll {
+                    self.scroll_up_in_region(1);
+                }
+                // Move cursor back to bottom of scrolling region
+                self.cursor_row = screen_start + self.scroll_region_bottom;
+                println!(
+                    "🔄 Alt-screen auto-scroll: scrolled {} lines, cursor at screen row {}",
+                    lines_to_scroll, self.scroll_region_bottom
+                );
+            }
+        } else {
+            // In normal mode, simply ensure buffer grows as needed
+            // The render system will automatically show the bottom part of the buffer
+            println!(
+                "🔄 Normal mode: cursor at row {}, buffer size {}",
+                self.cursor_row,
+                self.main_buffer.len()
+            );
+        }
+    }
+
+    // IND (Index) - Move cursor down one line, scroll if at bottom of scrolling region
+    pub fn index_down(&mut self) {
+        self.clear_arrow_key_protection();
+
+        if self.is_alt_screen {
+            // In alt-screen mode, check if at bottom of scrolling region
+            let screen_start = self.main_buffer.len().saturating_sub(self.rows);
+            let cursor_screen_row = self.cursor_row.saturating_sub(screen_start);
+
+            if cursor_screen_row >= self.scroll_region_bottom {
+                // At bottom of scrolling region - scroll up
+                self.scroll_up_in_region(1);
+                println!("🔄 IND: Scrolled up in region, cursor stays at bottom");
+            } else {
+                // Move cursor down normally
+                self.cursor_row += 1;
+                while self.cursor_row >= self.main_buffer.len() {
+                    self.main_buffer
+                        .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
+                }
+                println!("🔄 IND: Moved cursor down to row {}", cursor_screen_row + 1);
+            }
+        } else {
+            // In normal mode, just move cursor down and grow buffer as needed
+            self.cursor_row += 1;
+            while self.cursor_row >= self.main_buffer.len() {
+                self.main_buffer
+                    .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
+            }
+            println!(
+                "🔄 IND: Normal mode, moved cursor to row {}",
+                self.cursor_row
+            );
+        }
+
+        self.mark_render_dirty();
+    }
+
+    // NEL (Next Line) - Move to beginning of next line, scroll if at bottom
+    pub fn next_line(&mut self) {
+        self.index_down(); // Move down one line with scroll
+        self.cursor_col = 0; // Move to beginning of line
+        println!("🔄 NEL: Moved to beginning of next line");
+    }
+
+    // RI (Reverse Index) - Move cursor up one line, scroll if at top of scrolling region
+    pub fn reverse_index(&mut self) {
+        self.clear_arrow_key_protection();
+
+        if self.is_alt_screen {
+            // In alt-screen mode, check if at top of scrolling region
+            let screen_start = self.main_buffer.len().saturating_sub(self.rows);
+            let cursor_screen_row = self.cursor_row.saturating_sub(screen_start);
+
+            if cursor_screen_row <= self.scroll_region_top {
+                // At top of scrolling region - scroll down
+                self.scroll_down_in_region(1);
+                println!("🔄 RI: Scrolled down in region, cursor stays at top");
+            } else {
+                // Move cursor up normally
+                if self.cursor_row > 0 {
+                    self.cursor_row -= 1;
+                }
+                println!("🔄 RI: Moved cursor up to row {}", cursor_screen_row - 1);
+            }
+        } else {
+            // In normal mode, just move cursor up
+            if self.cursor_row > 0 {
+                self.cursor_row -= 1;
+            }
+            println!(
+                "🔄 RI: Normal mode, moved cursor to row {}",
+                self.cursor_row
+            );
+        }
+
+        self.mark_render_dirty();
     }
 }

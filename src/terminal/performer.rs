@@ -106,6 +106,27 @@ impl Perform for TerminalPerformer {
                         changed = true;
                     }
                 }
+                b'\x84' => {
+                    // IND (Index) - Move cursor down one line, scroll if at bottom
+                    println!("🔄 IND: Index - moving cursor down with scroll");
+                    state.index_down();
+                    changed = true;
+                    immediate = true;
+                }
+                b'\x85' => {
+                    // NEL (Next Line) - Move to beginning of next line, scroll if at bottom
+                    println!("🔄 NEL: Next Line - moving to next line start with scroll");
+                    state.next_line();
+                    changed = true;
+                    immediate = true;
+                }
+                b'\x8D' => {
+                    // RI (Reverse Index) - Move cursor up one line, scroll if at top
+                    println!("🔄 RI: Reverse Index - moving cursor up with scroll");
+                    state.reverse_index();
+                    changed = true;
+                    immediate = true;
+                }
                 _ => {}
             }
 
@@ -538,13 +559,35 @@ impl Perform for TerminalPerformer {
                     // Device Attributes - ignore
                 }
                 'r' => {
-                    // Set scrolling region - ignore for now
+                    // DECSTBM (DEC Set Top and Bottom Margins) - Set scrolling region
+                    let top = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&1);
+                    let default_bottom = state.rows as u16;
+                    let bottom = params
+                        .iter()
+                        .nth(1)
+                        .and_then(|p| p.get(0))
+                        .unwrap_or(&default_bottom);
+
+                    println!(
+                        "🎯 DECSTBM: Setting scroll region top={}, bottom={} (terminal size={}x{})",
+                        top, bottom, state.rows, state.cols
+                    );
+                    state.set_scroll_region(*top as usize, *bottom as usize);
+                    state_changed = true;
                 }
                 'S' => {
-                    // Scroll up - ignore for now
+                    // SU (Scroll Up) - Scroll up N lines in scrolling region
+                    let lines = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&1);
+
+                    state.scroll_up_in_region(*lines as usize);
+                    state_changed = true;
                 }
                 'T' => {
-                    // Scroll down - ignore for now
+                    // SD (Scroll Down) - Scroll down N lines in scrolling region
+                    let lines = params.iter().next().and_then(|p| p.get(0)).unwrap_or(&1);
+
+                    state.scroll_down_in_region(*lines as usize);
+                    state_changed = true;
                 }
                 'X' => {
                     // ECH (Erase Character) - Erase N characters from cursor position
@@ -641,6 +684,18 @@ impl Perform for TerminalPerformer {
                         state.saved_cursor_main
                     };
                     state.move_cursor_to(row, col);
+                    changed = true;
+                }
+                b'D' => {
+                    // IND (Index) - ESC D: Move cursor down one line, scroll if at bottom
+                    println!("🔄 ESC D: Index - moving cursor down with scroll");
+                    state.index_down();
+                    changed = true;
+                }
+                b'M' => {
+                    // RI (Reverse Index) - ESC M: Move cursor up one line, scroll if at top
+                    println!("🔄 ESC M: Reverse Index - moving cursor up with scroll");
+                    state.reverse_index();
                     changed = true;
                 }
                 _ => {}
