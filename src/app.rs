@@ -462,6 +462,10 @@ impl eframe::App for TerminalApp {
 
                     // Draw only the visible rows from the render_buffer.
                     for row_idx in first_visible_row..last_visible_row {
+                        // Safety check: ensure row_idx is within render_buffer bounds
+                        if row_idx >= state.render_buffer.len() {
+                            break;
+                        }
                         let row_data = &state.render_buffer[row_idx];
                         let y = response.rect.top() + row_idx as f32 * line_height;
                         let mut col_offset = 0.0;
@@ -567,19 +571,10 @@ impl eframe::App for TerminalApp {
                                 // This ensures accurate positioning regardless of render_buffer update timing
                                 let mut preview_x = response.rect.left();
                                 
-                                let cursor_row_data = if state.is_alt_screen {
-                                    if state.cursor_row < state.alt_screen.len() {
-                                        Some(&state.alt_screen[state.cursor_row])
-                                    } else {
-                                        None
-                                    }
+                                let cursor_row_data = if state.cursor_row < state.main_buffer.len() {
+                                    Some(&state.main_buffer[state.cursor_row])
                                 } else {
-                                    // For main buffer, use current cursor row from main_buffer
-                                    if state.cursor_row < state.main_buffer.len() {
-                                        Some(&state.main_buffer[state.cursor_row])
-                                    } else {
-                                        None
-                                    }
+                                    None
                                 };
                                 
                                 // Walk through the row to calculate precise cursor position
@@ -843,30 +838,21 @@ impl eframe::App for TerminalApp {
                                                 let mut prompt_end = 0;
                                                 let mut text_end = 0;
 
-                                                let row = if state.is_alt_screen {
-                                                    if state.cursor_row < state.alt_screen.len() {
-                                                        &state.alt_screen[state.cursor_row]
-                                                    } else {
-                                                        continue;
-                                                    }
+                                                // Use the visual row from the render_buffer for cursor movement logic
+                                                let row = if state.render_cursor_row < state.render_buffer.len() {
+                                                    &state.render_buffer[state.render_cursor_row]
                                                 } else {
-                                                    // Use the visual row from the render_buffer for cursor movement logic
-                                                    if state.render_cursor_row
-                                                        < state.render_buffer.len()
-                                                    {
-                                                        &state.render_buffer
-                                                            [state.render_cursor_row]
-                                                    } else {
-                                                        continue;
-                                                    }
+                                                    continue;
                                                 };
 
-                                                for i in 0..row.len().saturating_sub(1) {
-                                                    if (row[i].ch == '~' || row[i].ch == '✗')
-                                                        && row[i + 1].ch == ' '
-                                                    {
-                                                        prompt_end = i + 2;
-                                                        break;
+                                                if row.len() >= 2 {
+                                                    for i in 0..(row.len() - 1) {
+                                                        if (row[i].ch == '~' || row[i].ch == '✗')
+                                                            && row[i + 1].ch == ' '
+                                                        {
+                                                            prompt_end = i + 2;
+                                                            break;
+                                                        }
                                                     }
                                                 }
 
@@ -901,29 +887,20 @@ impl eframe::App for TerminalApp {
                                                 // Find prompt end to limit leftward movement
                                                 let mut prompt_end = 0;
 
-                                                let row = if state.is_alt_screen {
-                                                    if state.cursor_row < state.alt_screen.len() {
-                                                        &state.alt_screen[state.cursor_row]
-                                                    } else {
-                                                        return;
-                                                    }
+                                                let row = if state.render_cursor_row < state.render_buffer.len() {
+                                                    &state.render_buffer[state.render_cursor_row]
                                                 } else {
-                                                    if state.render_cursor_row
-                                                        < state.render_buffer.len()
-                                                    {
-                                                        &state.render_buffer
-                                                            [state.render_cursor_row]
-                                                    } else {
-                                                        return;
-                                                    }
+                                                    return;
                                                 };
 
-                                                for i in 0..row.len().saturating_sub(1) {
-                                                    if (row[i].ch == '~' || row[i].ch == '✗')
-                                                        && row[i + 1].ch == ' '
-                                                    {
-                                                        prompt_end = i + 2;
-                                                        break;
+                                                if row.len() >= 2 {
+                                                    for i in 0..(row.len() - 1) {
+                                                        if (row[i].ch == '~' || row[i].ch == '✗')
+                                                            && row[i + 1].ch == ' '
+                                                        {
+                                                            prompt_end = i + 2;
+                                                            break;
+                                                        }
                                                     }
                                                 }
 

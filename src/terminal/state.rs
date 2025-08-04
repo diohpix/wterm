@@ -74,12 +74,14 @@ pub struct TerminalState {
     pub arrow_key_pressed: bool,
     pub arrow_key_time: Option<Instant>,
 
-    // Alternative screen buffer (separate from main buffer, no reflow).
-    pub alt_screen: Vec<Vec<TerminalCell>>,
+    // Alternative screen mode (uses main_buffer but with screen size limits)
     pub is_alt_screen: bool,
     pub saved_cursor_main: (usize, usize),
     pub saved_cursor_alt: (usize, usize),
     pub cursor_visible: bool,
+
+    // Backup for main buffer when switching to alt screen
+    pub main_buffer_backup: Option<VecDeque<Vec<TerminalCell>>>,
 }
 
 impl TerminalState {
@@ -105,14 +107,6 @@ impl TerminalState {
 
     // Update render buffer: apply reflow to main_buffer and calculate visual cursor position
     pub fn update_render_buffer(&mut self) {
-        if self.is_alt_screen {
-            // For alt screen, render_buffer is just a copy of alt_screen
-            self.render_buffer = self.alt_screen.clone();
-            self.render_cursor_row = self.cursor_row;
-            self.render_cursor_col = self.cursor_col;
-            return;
-        }
-
         self.render_buffer.clear();
         let mut visual_cursor_row = 0;
         let mut visual_cursor_col = 0;
@@ -166,26 +160,32 @@ impl TerminalState {
                         visual_cursor_row = self.render_buffer.len() - 1;
                         // Calculate visual column by iterating from the start of the visual line
                         let mut temp_col = 0;
-                        for i in line_start_col..self.cursor_col {
-                            temp_col += source_row[i].ch.width().unwrap_or(1);
+                        let end_col = self.cursor_col.min(source_row.len());
+                        for i in line_start_col..end_col {
+                            if i < source_row.len() {
+                                temp_col += source_row[i].ch.width().unwrap_or(1);
+                            }
                         }
                         visual_cursor_col = temp_col;
                         cursor_found = true;
                     }
                 }
             }
-             // If this is the cursor's logical row and the cursor is at the very end
-             if !cursor_found && main_row_idx == self.cursor_row && self.cursor_col >= text_end {
+            // If this is the cursor's logical row and the cursor is at the very end
+            if !cursor_found && main_row_idx == self.cursor_row && self.cursor_col >= text_end {
                 visual_cursor_row = self.render_buffer.len() - 1;
                 let mut temp_col = 0;
-                for i in source_col..self.cursor_col {
-                     temp_col += source_row[i].ch.width().unwrap_or(1);
+                let end_col = self.cursor_col.min(source_row.len());
+                for i in source_col..end_col {
+                    if i < source_row.len() {
+                        temp_col += source_row[i].ch.width().unwrap_or(1);
+                    }
                 }
                 visual_cursor_col = temp_col;
                 cursor_found = true;
             }
         }
-        
+
         // Final cursor position update
         self.render_cursor_row = visual_cursor_row;
         self.render_cursor_col = visual_cursor_col;
@@ -209,11 +209,11 @@ impl TerminalState {
             current_color: AnsiColor::default(),
             arrow_key_pressed: false,
             arrow_key_time: None,
-            alt_screen: vec![vec![TerminalCell::default(); cols]; rows],
             is_alt_screen: false,
             saved_cursor_main: (0, 0),
             saved_cursor_alt: (0, 0),
             cursor_visible: true,
+            main_buffer_backup: None,
         };
         state.update_render_buffer();
         state
@@ -232,30 +232,50 @@ impl TerminalState {
         if self.rows == new_rows && self.cols == new_cols {
             return;
         }
+
+        let _old_rows = self.rows;
         self.rows = new_rows;
         self.cols = new_cols;
 
-        if self.is_alt_screen {
-            self.alt_screen = vec![vec![TerminalCell::default(); new_cols]; new_rows];
-        } else {
-            // When resizing, the entire buffer needs to be reflowed.
-            self.mark_render_dirty();
-        }
-        
+        // In alt screen mode, don't force buffer size changes
+        // Let the application (top, vim, etc.) handle resize by itself
+
+        // When resizing, the entire buffer needs to be reflowed.
+        self.mark_render_dirty();
+
         // Ensure cursor is within new bounds
         self.cursor_col = self.cursor_col.min(new_cols.saturating_sub(1));
-        self.cursor_row = self.cursor_row.min(self.main_buffer.len().saturating_sub(1));
+
+        // Ensure main_buffer has at least one row
+        if self.main_buffer.is_empty() {
+            self.main_buffer
+                .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
+        }
+
+        self.cursor_row = self.cursor_row.min(self.main_buffer.len() - 1);
     }
 
     pub fn put_char(&mut self, ch: char) {
         self.clear_arrow_key_protection();
         let char_width = ch.width().unwrap_or(1);
 
-        let buffer = if self.is_alt_screen {
-            &mut self.alt_screen[self.cursor_row]
-        } else {
-            &mut self.main_buffer[self.cursor_row]
-        };
+        // Ensure row exists in main_buffer
+        while self.cursor_row >= self.main_buffer.len() {
+            self.main_buffer
+                .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
+        }
+
+        // Additional safety check
+        if self.cursor_row >= self.main_buffer.len() {
+            eprintln!(
+                "🚨 PANIC PREVENTION: cursor_row={}, buffer_len={}",
+                self.cursor_row,
+                self.main_buffer.len()
+            );
+            return; // Early return to prevent panic
+        }
+
+        let buffer = &mut self.main_buffer[self.cursor_row];
 
         // Ensure row has enough capacity
         if self.cursor_col + char_width >= buffer.len() {
@@ -285,24 +305,19 @@ impl TerminalState {
         self.cursor_col = 0;
         self.cursor_row += 1;
 
-        if self.is_alt_screen {
-            if self.cursor_row >= self.rows {
-                self.cursor_row = self.rows - 1;
-                // Potentially scroll alt screen content up here if desired
-            }
-        } else {
-            // Ensure cursor_row does not exceed main_buffer length
-            if self.cursor_row >= self.main_buffer.len() {
-                 self.main_buffer.push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
-            }
+        // Ensure cursor_row does not exceed main_buffer length
+        if self.cursor_row >= self.main_buffer.len() {
+            self.main_buffer
+                .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
+        }
 
-            // Trim history if it exceeds the maximum
-            while self.main_buffer.len() > MAX_HISTORY_LINES {
-                self.main_buffer.pop_front();
-                // Adjust cursor_row if it's affected by the removal
-                if self.cursor_row > 0 {
-                    self.cursor_row -= 1;
-                }
+        // Both alt screen and main screen: use the same history management
+        // Alt screen apps (like top, vim) can handle their own scrolling
+        while self.main_buffer.len() > MAX_HISTORY_LINES {
+            self.main_buffer.pop_front();
+            // Adjust cursor_row if it's affected by the removal
+            if self.cursor_row > 0 {
+                self.cursor_row -= 1;
             }
         }
         self.mark_render_dirty();
@@ -318,13 +333,11 @@ impl TerminalState {
             // This is a simplified backspace. A more correct implementation
             // would handle wide characters properly.
             self.cursor_col -= 1;
-            let buffer = if self.is_alt_screen {
-                &mut self.alt_screen[self.cursor_row]
-            } else {
-                &mut self.main_buffer[self.cursor_row]
-            };
-            if self.cursor_col < buffer.len() {
-                buffer[self.cursor_col] = TerminalCell::default();
+            if self.cursor_row < self.main_buffer.len() {
+                let buffer = &mut self.main_buffer[self.cursor_row];
+                if self.cursor_col < buffer.len() {
+                    buffer[self.cursor_col] = TerminalCell::default();
+                }
             }
         }
         self.mark_render_dirty();
@@ -332,9 +345,11 @@ impl TerminalState {
 
     pub fn move_cursor_to(&mut self, row: usize, col: usize) {
         if self.is_alt_screen {
+            // In alt screen mode, limit to screen bounds
             self.cursor_row = row.min(self.rows - 1);
             self.cursor_col = col.min(self.cols - 1);
         } else {
+            // In main screen mode, limit to buffer bounds
             self.cursor_row = row.min(self.main_buffer.len() - 1);
             self.cursor_col = col.min(MAX_MAIN_BUFFER_COLS - 1);
         }
@@ -370,10 +385,22 @@ impl TerminalState {
     // Switch to alternative screen buffer
     pub fn switch_to_alt_screen(&mut self) {
         if !self.is_alt_screen {
+            // Save current main buffer state
+            self.main_buffer_backup = Some(self.main_buffer.clone());
             self.saved_cursor_main = (self.cursor_row, self.cursor_col);
+
+            // Switch to alternative screen - initialize main_buffer as clean screen
+            self.main_buffer.clear();
+            // Create initial rows to match screen size
+            for _ in 0..self.rows {
+                self.main_buffer
+                    .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
+            }
             self.is_alt_screen = true;
             self.cursor_row = 0;
             self.cursor_col = 0;
+
+            println!("🔄 Switched to alternative screen buffer (using main_buffer)");
             self.mark_render_dirty();
         }
     }
@@ -381,9 +408,16 @@ impl TerminalState {
     // Switch back to main screen buffer
     pub fn switch_to_main_screen(&mut self) {
         if self.is_alt_screen {
-            self.is_alt_screen = false;
+            // Don't save alt screen state - each app gets a clean alt screen
+            // Just restore main screen
+            if let Some(backup) = self.main_buffer_backup.take() {
+                self.main_buffer = backup;
+            }
             self.cursor_row = self.saved_cursor_main.0;
             self.cursor_col = self.saved_cursor_main.1;
+            self.is_alt_screen = false;
+
+            println!("🔄 Restored main screen buffer");
             self.mark_render_dirty();
         }
     }
