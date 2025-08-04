@@ -626,10 +626,10 @@ impl TerminalState {
                 self.main_buffer
                     .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
             }
-            println!(
-                "🔄 IND: Normal mode, moved cursor to row {}",
-                self.cursor_row
-            );
+            // println!(
+            //     "🔄 IND: Normal mode, moved cursor to row {}",
+            //     self.cursor_row
+            // );
         }
 
         self.mark_render_dirty();
@@ -667,10 +667,10 @@ impl TerminalState {
             if self.cursor_row > 0 {
                 self.cursor_row -= 1;
             }
-            println!(
-                "🔄 RI: Normal mode, moved cursor to row {}",
-                self.cursor_row
-            );
+            // println!(
+            //     "🔄 RI: Normal mode, moved cursor to row {}",
+            //     self.cursor_row
+            // );
         }
 
         self.mark_render_dirty();
