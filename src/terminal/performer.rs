@@ -80,7 +80,7 @@ impl Perform for TerminalPerformer {
                     immediate = true; // Important event - repaint immediately
                 }
                 b'\x08' => {
-                    if !state.should_protect_from_arrow_key() {
+                    if !state.should_protect_from_arrow_key() && state.can_backspace_safely() {
                         state.backspace();
                         changed = true;
                     }
@@ -101,7 +101,7 @@ impl Perform for TerminalPerformer {
                     immediate = true; // Clear screen - repaint immediately
                 }
                 b'\x7f' => {
-                    if !state.should_protect_from_arrow_key() {
+                    if !state.should_protect_from_arrow_key() && state.can_backspace_safely() {
                         state.backspace();
                         changed = true;
                     }
