@@ -52,6 +52,7 @@ impl TerminalApp {
 
     // Process Korean character input and return completed character if any
     fn process_korean_char(&mut self, ch: char) -> Option<char> {
+        println!("🔤 Processing Korean char: '{}' (U+{:04X})", ch, ch as u32);
         if crate::ime::korean::is_consonant(ch) {
             if self.korean_state.chosung.is_none() {
                 // First consonant - set as chosung, start composing
@@ -70,6 +71,9 @@ impl TerminalApp {
                 } else {
                     // Can't combine - complete current syllable and start new one
                     let completed = self.korean_state.get_current_char();
+                    if let Some(c) = completed {
+                        println!("✅ Completing syllable (consonant can't combine): '{}'", c);
+                    }
                     self.korean_state.reset();
                     self.korean_state.chosung = Some(ch);
                     self.korean_state.is_composing = true;
@@ -78,6 +82,9 @@ impl TerminalApp {
             } else {
                 // Already have chosung but no jungsung - complete current and start new
                 let completed = self.korean_state.get_current_char();
+                if let Some(c) = completed {
+                    println!("✅ Completing syllable (no jungsung): '{}'", c);
+                }
                 self.korean_state.reset();
                 self.korean_state.chosung = Some(ch);
                 self.korean_state.is_composing = true;
@@ -103,6 +110,10 @@ impl TerminalApp {
                     self.korean_state.chosung = Some(jong);
                     self.korean_state.jungsung = Some(ch);
                     self.korean_state.is_composing = true;
+                    println!(
+                        "✅ Completing syllable (vowel with jongsung split): '{}'",
+                        completed
+                    );
                     return Some(completed); // Send completed "가", keep "나" composing
                 } else {
                     // Try to combine with existing jungsung
@@ -112,6 +123,9 @@ impl TerminalApp {
                     } else {
                         // Can't combine - complete current syllable
                         let completed = self.korean_state.get_current_char();
+                        if let Some(c) = completed {
+                            println!("✅ Completing syllable (vowel can't combine): '{}'", c);
+                        }
                         self.korean_state.reset();
                         // Vowel can't start a new syllable without consonant, so just send it
                         return completed;
@@ -130,19 +144,22 @@ impl TerminalApp {
     fn finalize_korean_composition(&mut self) {
         if self.korean_state.is_composing {
             if let Some(completed) = self.korean_state.get_current_char() {
+                println!("🏁 Finalizing Korean composition: '{}'", completed);
                 self.send_to_pty(&completed.to_string());
             }
             self.korean_state.reset();
         }
     }
 
+
     // Helper function to send text to PTY
     fn send_to_pty(&mut self, text: &str) {
-        // println!(
-        //     "📤 DEBUG: Sending to PTY: {:?} (bytes: {:?})",
-        //     text,
-        //     text.as_bytes()
-        // );
+        println!(
+            "📤 DEBUG: Sending to PTY: {:?} (bytes: {:?})",
+            text,
+            text.as_bytes()
+        );
+        
         if let Ok(mut writer) = self.pty_writer.lock() {
             let _ = writer.write_all(text.as_bytes());
             let _ = writer.flush();
@@ -419,20 +436,27 @@ impl eframe::App for TerminalApp {
 
                     let (response, painter) = ui.allocate_painter(
                         egui::Vec2::new(content_width, content_height),
-                        egui::Sense::click_and_drag().union(egui::Sense::focusable_noninteractive()),
+                        egui::Sense::click_and_drag()
+                            .union(egui::Sense::focusable_noninteractive()),
                     );
 
-                    painter.rect_filled(ui.clip_rect(), egui::CornerRadius::ZERO, egui::Color32::BLACK);
+                    painter.rect_filled(
+                        ui.clip_rect(),
+                        egui::CornerRadius::ZERO,
+                        egui::Color32::BLACK,
+                    );
 
                     if response.clicked() {
                         ui.memory_mut(|mem| mem.request_focus(response.id));
                     }
 
                     // --- Row Virtualization ---
-                    let first_visible_row = ((ui.clip_rect().top() - response.rect.top()) / line_height)
+                    let first_visible_row = ((ui.clip_rect().top() - response.rect.top())
+                        / line_height)
                         .floor()
                         .max(0.0) as usize;
-                    let last_visible_row = ((ui.clip_rect().bottom() - response.rect.top()) / line_height)
+                    let last_visible_row = ((ui.clip_rect().bottom() - response.rect.top())
+                        / line_height)
                         .ceil() as usize;
                     let last_visible_row = last_visible_row.min(total_lines);
 
@@ -443,13 +467,22 @@ impl eframe::App for TerminalApp {
                         let mut col_offset = 0.0;
 
                         for cell in row_data.iter() {
-                            if cell.ch == '\u{0000}' { continue; }
+                            if cell.ch == '\u{0000}' {
+                                continue;
+                            }
 
-                            let char_display_width = if cell.ch.width().unwrap_or(1) == 2 { 2.0 } else { 1.0 };
+                            let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
+                                2.0
+                            } else {
+                                1.0
+                            };
                             let display_width = char_display_width * char_width;
                             let x = response.rect.left() + col_offset;
                             let pos = egui::Pos2::new(x, y);
-                            let cell_rect = egui::Rect::from_min_size(pos, egui::Vec2::new(display_width, line_height));
+                            let cell_rect = egui::Rect::from_min_size(
+                                pos,
+                                egui::Vec2::new(display_width, line_height),
+                            );
 
                             let (final_fg, final_bg) = if cell.color.reverse {
                                 (cell.color.background, cell.color.foreground)
@@ -472,11 +505,20 @@ impl eframe::App for TerminalApp {
                                         a,
                                     );
                                 }
-                                painter.text(pos, egui::Align2::LEFT_TOP, cell.ch, font_id.clone(), text_color);
+                                painter.text(
+                                    pos,
+                                    egui::Align2::LEFT_TOP,
+                                    cell.ch,
+                                    font_id.clone(),
+                                    text_color,
+                                );
                                 if cell.color.underline {
                                     let underline_y = y + line_height - 1.0;
                                     painter.line_segment(
-                                        [egui::Pos2::new(x, underline_y), egui::Pos2::new(x + display_width, underline_y)],
+                                        [
+                                            egui::Pos2::new(x, underline_y),
+                                            egui::Pos2::new(x + display_width, underline_y),
+                                        ],
                                         egui::Stroke::new(1.0, text_color),
                                     );
                                 }
@@ -486,16 +528,110 @@ impl eframe::App for TerminalApp {
                     }
 
                     // Draw cursor based on the calculated visual position from TerminalState.
-                    let cursor_y = response.rect.top() + state.render_cursor_row as f32 * line_height;
-                    if cursor_y >= ui.clip_rect().top() && cursor_y + line_height <= ui.clip_rect().bottom() {
-                        let cursor_x = response.rect.left() + state.render_cursor_col as f32 * char_width;
-                        if state.cursor_visible {
+                    let cursor_y =
+                        response.rect.top() + state.render_cursor_row as f32 * line_height;
+                    if cursor_y >= ui.clip_rect().top()
+                        && cursor_y + line_height <= ui.clip_rect().bottom()
+                    {
+                        let cursor_x =
+                            response.rect.left() + state.render_cursor_col as f32 * char_width;
+                        
+                        if self.korean_state.is_composing {
+                            println!("📍 Cursor position: row={}, col={}, x={}, y={}", 
+                                state.render_cursor_row, state.render_cursor_col, cursor_x, cursor_y);
+                        }
+                        if state.cursor_visible && !self.korean_state.is_composing {
                             let cursor_line_y = cursor_y + line_height - 2.0;
                             painter.rect_filled(
-                                egui::Rect::from_min_size(egui::Pos2::new(cursor_x, cursor_line_y), egui::Vec2::new(char_width, 2.0)),
+                                egui::Rect::from_min_size(
+                                    egui::Pos2::new(cursor_x, cursor_line_y),
+                                    egui::Vec2::new(char_width, 2.0),
+                                ),
                                 egui::CornerRadius::ZERO,
                                 egui::Color32::WHITE,
                             );
+                        }
+                        // Calculate cursor width for Korean composition if needed
+                        let cursor_width = if self.korean_state.is_composing {
+                            // Korean composing characters are always wide (2 chars)
+                            2.0 * char_width
+                        } else {
+                            // Normal cursor width
+                            char_width
+                        };
+
+                        // Draw composing character preview if Korean composition is active
+                        if self.korean_state.is_composing {
+                            if let Some(composing_char) = self.korean_state.get_current_char() {
+                                // Calculate precise cursor X position by walking through the row (like e32f82d)
+                                // This ensures accurate positioning regardless of render_buffer update timing
+                                let mut preview_x = response.rect.left();
+                                
+                                let cursor_row_data = if state.is_alt_screen {
+                                    if state.cursor_row < state.alt_screen.len() {
+                                        Some(&state.alt_screen[state.cursor_row])
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    // For main buffer, use current cursor row from main_buffer
+                                    if state.cursor_row < state.main_buffer.len() {
+                                        Some(&state.main_buffer[state.cursor_row])
+                                    } else {
+                                        None
+                                    }
+                                };
+                                
+                                // Walk through the row to calculate precise cursor position
+                                if let Some(row) = cursor_row_data {
+                                    for cell_idx in 0..state.cursor_col.min(row.len()) {
+                                        let cell = &row[cell_idx];
+                                        if cell.ch == '\u{0000}' {
+                                            continue;
+                                        }
+                                        
+                                        // Calculate display width like e32f82d
+                                        let char_display_width = if cell.ch.width().unwrap_or(1) == 2 {
+                                            2 // Korean and other wide characters are 2 units
+                                        } else {
+                                            1 // All other characters are 1 unit
+                                        };
+                                        preview_x += char_display_width as f32 * char_width;
+                                    }
+                                }
+                                
+                                let preview_y = cursor_y;
+                                
+                                println!("🎯 Composing preview at: cursor_col={}, calculated_x={}, y={} for char '{}' (using e32f82d method)", 
+                                    state.cursor_col, preview_x, preview_y, composing_char);
+
+                                // Draw composing character with a different color (gray/dimmed) to show it's temporary
+                                let preview_color = egui::Color32::from_rgb(150, 150, 150); // Gray preview color
+
+                                // Draw a subtle background to make the preview more visible
+                                let preview_bg =
+                                    egui::Color32::from_rgba_unmultiplied(100, 100, 100, 50);
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::Pos2::new(preview_x, preview_y),
+                                        egui::Vec2::new(cursor_width, line_height),
+                                    ),
+                                    egui::CornerRadius::ZERO,
+                                    preview_bg,
+                                );
+
+                                // Draw the composing character
+                                painter.text(
+                                    egui::Pos2::new(preview_x, preview_y),
+                                    egui::Align2::LEFT_TOP,
+                                    composing_char,
+                                    font_id.clone(),
+                                    preview_color,
+                                );
+
+                                // Hide the normal cursor when composing
+                                // (The composing character serves as a visual cursor)
+                            }
                         }
                     }
 
@@ -650,8 +786,7 @@ impl eframe::App for TerminalApp {
                                     }
                                     egui::Key::Space => {
                                         // Space is handled by Text event, don't handle it here
-                                        // Just finalize Korean composition if any
-                                        self.finalize_korean_composition();
+                                        // Don't finalize composition here - let Text event handle it
                                     }
                                     // Tab is handled above - no case needed here
                                     egui::Key::Backspace => {
@@ -716,9 +851,11 @@ impl eframe::App for TerminalApp {
                                                     }
                                                 } else {
                                                     // Use the visual row from the render_buffer for cursor movement logic
-                                                    if state.render_cursor_row < state.render_buffer.len()
+                                                    if state.render_cursor_row
+                                                        < state.render_buffer.len()
                                                     {
-                                                        &state.render_buffer[state.render_cursor_row]
+                                                        &state.render_buffer
+                                                            [state.render_cursor_row]
                                                     } else {
                                                         continue;
                                                     }
@@ -771,9 +908,11 @@ impl eframe::App for TerminalApp {
                                                         return;
                                                     }
                                                 } else {
-                                                    if state.render_cursor_row < state.render_buffer.len()
+                                                    if state.render_cursor_row
+                                                        < state.render_buffer.len()
                                                     {
-                                                        &state.render_buffer[state.render_cursor_row]
+                                                        &state.render_buffer
+                                                            [state.render_cursor_row]
                                                     } else {
                                                         return;
                                                     }
@@ -929,19 +1068,20 @@ impl eframe::App for TerminalApp {
                             }
                             egui::Event::Text(text) => {
                                 // Debug: Log what text events we receive
+                                println!("🔍 Text event received: {:?} (bytes: {:?})", text, text.as_bytes());
                                 for ch in text.chars() {
                                     if ch == '\t' {
-                                        //println!("⚠️ Tab character received in Text event (already handled above)");
+                                        println!("⚠️ Tab character received in Text event (already handled above)");
                                         return; // Don't process as regular text - already handled above
                                     } else if ch == '\n' || ch == '\r' {
-                                        //println!("⚠️ Newline/Return character received in Text event (potential duplication!): U+{:04X}", ch as u32);
+                                        println!("⚠️ Newline/Return character received in Text event (potential duplication!): U+{:04X}", ch as u32);
                                         return; // Don't process as regular text - already handled above
                                     } else if ch == ' ' {
-                                        //println!("✅ Space character in Text event (expected)");
+                                        println!("⚠️ Space character in Text event!");
                                     } else if ch.is_ascii_graphic() {
-                                        //println!("✅ Text event: '{}'", ch);
+                                        println!("✅ Text event: '{}'", ch);
                                     } else {
-                                        //println!("❓ Text event: U+{:04X}", ch as u32);
+                                        println!("❓ Text event: U+{:04X} ({})", ch as u32, ch);
                                     }
                                 }
                                 // Use new IME-aware text processing
