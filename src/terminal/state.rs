@@ -7,7 +7,7 @@ pub const MAX_HISTORY_LINES: usize = 1000;
 pub const MAX_MAIN_BUFFER_COLS: usize = 1000; // Fixed width for main_buffer to preserve original data
 
 // ANSI 색상 정보를 저장하는 구조체
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnsiColor {
     pub foreground: egui::Color32,
     pub background: egui::Color32,
@@ -31,7 +31,7 @@ impl Default for AnsiColor {
 }
 
 // 터미널 셀 정보 (문자 + 색상)
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerminalCell {
     pub ch: char,
     pub color: AnsiColor,
@@ -96,6 +96,110 @@ impl TerminalState {
             .map_or(0, |i| i + 1)
     }
 
+    // Fast bulk copy for terminal cells using unsafe operations
+    unsafe fn fast_copy_cells(&self, src: &[TerminalCell], dst: &mut [TerminalCell], count: usize) {
+        debug_assert!(count <= src.len());
+        debug_assert!(count <= dst.len());
+        debug_assert!(count > 0);
+        std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr(), count);
+    }
+
+    // Safe bulk copy wrapper with optional unsafe optimization
+    fn bulk_copy_cells(&self, src: &[TerminalCell], dst: &mut [TerminalCell]) -> usize {
+        let copy_len = src.len().min(dst.len());
+        if copy_len > 0 {
+            // Use optimized copy strategy based on size
+            if copy_len >= 100 && copy_len <= 1000 {
+                // Sweet spot for unsafe optimization
+                unsafe {
+                    self.fast_copy_cells(src, dst, copy_len);
+                }
+            } else {
+                // Use safe copy for very small or very large chunks
+                dst[..copy_len].copy_from_slice(&src[..copy_len]);
+            }
+        }
+        copy_len
+    }
+
+    // Alternative safe bulk copy (for comparison)
+    fn safe_bulk_copy_cells(&self, src: &[TerminalCell], dst: &mut [TerminalCell]) -> usize {
+        let copy_len = src.len().min(dst.len());
+        if copy_len > 0 {
+            dst[..copy_len].copy_from_slice(&src[..copy_len]);
+        }
+        copy_len
+    }
+
+    // Performance test method to compare different copy approaches
+    #[allow(dead_code)]
+    fn benchmark_copy_methods(&self) {
+        use std::time::Instant;
+
+        // Test multiple sizes to see where unsafe wins
+        let test_sizes = [10, 50, 100, 500, 1000, 5000];
+        let iterations = 50000;
+
+        println!(
+            "📊 Copy Performance Benchmark ({} iterations per test):",
+            iterations
+        );
+        println!("Size\t\tSafe(μs)\tUnsafe(μs)\tHybrid(μs)\tUnsafe Speedup\tHybrid Speedup");
+        println!(
+            "─────────────────────────────────────────────────────────────────────────────────"
+        );
+
+        for &size in &test_sizes {
+            // Create test data
+            let test_row = vec![TerminalCell::default(); size];
+            let mut dest_row = vec![TerminalCell::default(); size];
+
+            // Test 1: Safe copy_from_slice
+            let start = Instant::now();
+            for _ in 0..iterations {
+                dest_row[..size].copy_from_slice(&test_row[..size]);
+            }
+            let safe_duration = start.elapsed();
+
+            // Test 2: Unsafe ptr::copy_nonoverlapping
+            let start = Instant::now();
+            for _ in 0..iterations {
+                unsafe {
+                    self.fast_copy_cells(&test_row, &mut dest_row, size);
+                }
+            }
+            let unsafe_duration = start.elapsed();
+
+            // Test 3: bulk_copy_cells (hybrid approach)
+            let start = Instant::now();
+            for _ in 0..iterations {
+                self.bulk_copy_cells(&test_row[..size], &mut dest_row[..size]);
+            }
+            let hybrid_duration = start.elapsed();
+
+            let safe_us = safe_duration.as_nanos() as f64 / 1000.0;
+            let unsafe_us = unsafe_duration.as_nanos() as f64 / 1000.0;
+            let hybrid_us = hybrid_duration.as_nanos() as f64 / 1000.0;
+
+            let unsafe_speedup = safe_us / unsafe_us;
+            let hybrid_speedup = safe_us / hybrid_us;
+
+            println!(
+                "{:>4}\t\t{:>7.1}\t\t{:>9.1}\t{:>9.1}\t{:>11.2}x\t{:>12.2}x",
+                size, safe_us, unsafe_us, hybrid_us, unsafe_speedup, hybrid_speedup
+            );
+        }
+
+        println!(
+            "─────────────────────────────────────────────────────────────────────────────────"
+        );
+        if cfg!(debug_assertions) {
+            println!("Note: Results in DEBUG mode. Run with --release for optimized performance.");
+        } else {
+            println!("Note: Results in RELEASE mode with full optimization.");
+        }
+    }
+
     // Mark render_buffer as dirty for batch update
     pub fn mark_render_dirty(&mut self) {
         self.render_buffer_dirty = true;
@@ -133,7 +237,10 @@ impl TerminalState {
                 let mut render_row = vec![TerminalCell::default(); self.cols];
                 let copy_length = text_end.min(self.cols);
                 if copy_length > 0 {
-                    render_row[..copy_length].clone_from_slice(&source_row[..copy_length]);
+                    self.bulk_copy_cells(
+                        &source_row[..copy_length],
+                        &mut render_row[..copy_length],
+                    );
                 }
                 self.render_buffer.push(render_row);
 
@@ -159,30 +266,74 @@ impl TerminalState {
                             continue;
                         }
 
-                        // Check if character fits in current render row
-                        let char_width = source_row[source_col].ch.width().unwrap_or(1);
-                        if render_col + char_width > self.cols {
-                            break; // Move to next render row
+                        // Optimization: Try to bulk copy consecutive normal-width characters
+                        let start_source_col = source_col;
+                        let start_render_col = render_col;
+                        let mut consecutive_normal_chars = 0;
+
+                        // Count consecutive normal-width characters
+                        while render_col < self.cols && source_col < text_end {
+                            if source_row[source_col].ch == '\u{0000}' {
+                                break;
+                            }
+                            let char_width = source_row[source_col].ch.width().unwrap_or(1);
+                            if char_width != 1 || render_col + 1 > self.cols {
+                                break;
+                            }
+                            consecutive_normal_chars += 1;
+                            render_col += 1;
+                            source_col += 1;
                         }
 
-                        render_row[render_col] = source_row[source_col].clone();
+                        // Bulk copy if we found consecutive normal characters
+                        if consecutive_normal_chars > 0 {
+                            self.bulk_copy_cells(
+                                &source_row
+                                    [start_source_col..start_source_col + consecutive_normal_chars],
+                                &mut render_row
+                                    [start_render_col..start_render_col + consecutive_normal_chars],
+                            );
 
-                        // For wide characters, mark the second cell as continuation
-                        if char_width == 2 && render_col + 1 < self.cols {
-                            render_row[render_col + 1] = TerminalCell {
-                                ch: '\u{0000}',
-                                color: source_row[source_col].color.clone(),
-                            };
+                            // Check cursor position in the bulk copied range
+                            if is_cursor_row
+                                && self.cursor_col >= start_source_col
+                                && self.cursor_col < start_source_col + consecutive_normal_chars
+                            {
+                                self.render_cursor_row = self.render_buffer.len();
+                                self.render_cursor_col =
+                                    start_render_col + (self.cursor_col - start_source_col);
+                            }
                         }
 
-                        // Check if this is where cursor should be (for cursor row)
-                        if is_cursor_row && source_col == self.cursor_col {
-                            self.render_cursor_row = self.render_buffer.len();
-                            self.render_cursor_col = render_col;
-                        }
+                        // Handle remaining character (wide character or end condition)
+                        if render_col < self.cols
+                            && source_col < text_end
+                            && source_row[source_col].ch != '\u{0000}'
+                        {
+                            let char_width = source_row[source_col].ch.width().unwrap_or(1);
+                            if render_col + char_width <= self.cols {
+                                render_row[render_col] = source_row[source_col];
 
-                        render_col += char_width;
-                        source_col += 1;
+                                // For wide characters, mark the second cell as continuation
+                                if char_width == 2 && render_col + 1 < self.cols {
+                                    render_row[render_col + 1] = TerminalCell {
+                                        ch: '\u{0000}',
+                                        color: source_row[source_col].color,
+                                    };
+                                }
+
+                                // Check if this is where cursor should be (for cursor row)
+                                if is_cursor_row && source_col == self.cursor_col {
+                                    self.render_cursor_row = self.render_buffer.len();
+                                    self.render_cursor_col = render_col;
+                                }
+
+                                render_col += char_width;
+                                source_col += 1;
+                            } else {
+                                break; // Can't fit this character
+                            }
+                        }
                     }
 
                     self.render_buffer.push(render_row);
@@ -230,6 +381,13 @@ impl TerminalState {
             scroll_region_bottom: rows - 1,
         };
         state.update_render_buffer();
+
+        // Run performance benchmark when explicitly requested
+        if std::env::var("WTERM_BENCHMARK").is_ok() {
+            println!("🚀 Running copy performance benchmark...");
+            state.benchmark_copy_methods();
+        }
+
         state
     }
 
@@ -306,14 +464,14 @@ impl TerminalState {
 
         buffer[self.cursor_col] = TerminalCell {
             ch,
-            color: self.current_color.clone(),
+            color: self.current_color,
         };
 
         if char_width == 2 {
             if self.cursor_col + 1 < buffer.len() {
                 buffer[self.cursor_col + 1] = TerminalCell {
                     ch: '\u{0000}', // Continuation marker
-                    color: self.current_color.clone(),
+                    color: self.current_color,
                 };
             }
         }
