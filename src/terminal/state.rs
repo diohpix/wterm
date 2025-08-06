@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 
-pub const MAX_HISTORY_LINES: usize = 1000;
+pub const MAX_HISTORY_LINES: usize = 10;
 pub const MAX_MAIN_BUFFER_COLS: usize = 1000; // Fixed width for main_buffer to preserve original data
 
 // ANSI 색상 정보를 저장하는 구조체
@@ -56,6 +56,7 @@ pub struct TerminalState {
     // This is what is actually displayed.
     pub render_buffer: Vec<Vec<TerminalCell>>,
     pub render_buffer_dirty: bool,
+    pub incremental_update: bool, // true = only process changed rows, false = full reflow
 
     // Logical cursor position in the main_buffer.
     pub cursor_row: usize,
@@ -86,6 +87,14 @@ pub struct TerminalState {
     // Scrolling region (DECSTBM)
     pub scroll_region_top: usize, // Top line of scrolling region (0-based)
     pub scroll_region_bottom: usize, // Bottom line of scrolling region (0-based)
+
+    // Viewport tracking for optimized render_buffer updates
+    pub visible_start_row: usize, // First visible row in render_buffer
+    pub visible_end_row: usize,   // Last visible row in render_buffer (exclusive)
+
+    // Render update throttling to reduce frequent updates during fast data input
+    pub last_render_update_time: Option<Instant>,
+    pub render_update_interval_ms: u64, // Minimum interval between updates (milliseconds)
 }
 
 impl TerminalState {
@@ -205,12 +214,47 @@ impl TerminalState {
         self.render_buffer_dirty = true;
     }
 
-    // Update render_buffer from main_buffer's visible area (only if dirty)
+    // Update render_buffer from main_buffer's visible area (only if dirty and throttled)
     pub fn update_render_buffer_if_dirty(&mut self) {
-        if self.render_buffer_dirty {
-            self.update_render_buffer();
-            self.render_buffer_dirty = false;
+        if !self.render_buffer_dirty {
+            return;
         }
+
+        // Check throttling: only update if enough time has passed
+        let now = Instant::now();
+        if let Some(last_update) = self.last_render_update_time {
+            let elapsed = now.duration_since(last_update).as_millis() as u64;
+            if elapsed < self.render_update_interval_ms {
+                return; // Skip update, not enough time has passed
+            }
+        }
+
+        self.update_render_buffer();
+        self.render_buffer_dirty = false;
+        self.last_render_update_time = Some(now);
+    }
+
+    // Force update render_buffer regardless of throttling (for important operations)
+    pub fn force_update_render_buffer(&mut self) {
+        self.update_render_buffer();
+        self.render_buffer_dirty = false;
+        self.last_render_update_time = Some(Instant::now());
+    }
+
+    // Update viewport information for optimized rendering
+    pub fn update_viewport(&mut self, visible_start: usize, visible_end: usize) {
+        self.visible_start_row = visible_start;
+        self.visible_end_row = visible_end;
+    }
+
+    // Set render update interval for throttling control
+    pub fn set_render_update_interval(&mut self, interval_ms: u64) {
+        self.render_update_interval_ms = interval_ms;
+    }
+
+    // Get current render update interval
+    pub fn get_render_update_interval(&self) -> u64 {
+        self.render_update_interval_ms
     }
 
     // Update render buffer and calculate cursor offset in one pass (like commit 7a65ed9)
@@ -218,11 +262,27 @@ impl TerminalState {
         // Clear render_buffer first
         self.render_buffer.clear();
 
-        let mut main_buffer_idx = 0;
+        // Calculate viewport range with safety margin for reflow
+        let viewport_margin = self.rows * 2; // Extra rows before/after viewport
+        let safe_start = self.visible_start_row.saturating_sub(viewport_margin);
+        let safe_end = (self.visible_end_row + viewport_margin).min(self.main_buffer.len());
 
-        // Process main_buffer rows and reflow them into render_buffer
-        // Keep the original design: render_buffer processes all main_buffer for proper scrolling
-        while main_buffer_idx < self.main_buffer.len() {
+        // Smart incremental vs full reflow based on operation type
+        let (process_start, process_end) = if self.incremental_update {
+            // PTY data: no reflow needed, just copy main_buffer as-is to render_buffer
+            // Shell/PTY already handles line wrapping and formatting
+            // Simply copy all rows without reflow processing
+            self.copy_main_to_render_without_reflow();
+            return; // Skip reflow processing entirely
+        } else {
+            // Full reflow: process entire buffer (resize, clear, etc.)
+            (0, self.main_buffer.len())
+        };
+
+        let mut main_buffer_idx = process_start;
+
+        // Process selected range of main_buffer rows and reflow them into render_buffer
+        while main_buffer_idx < process_end {
             let source_row = &self.main_buffer[main_buffer_idx];
             let is_cursor_row = main_buffer_idx == self.cursor_row;
 
@@ -355,6 +415,39 @@ impl TerminalState {
         self.render_buffer_dirty = false;
     }
 
+    // Fast copy for PTY data without reflow (shell already handles wrapping)
+    fn copy_main_to_render_without_reflow(&mut self) {
+        // Clear render_buffer first
+        self.render_buffer.clear();
+
+        // Simply copy each main_buffer row to render_buffer without reflow
+        for (row_idx, source_row) in self.main_buffer.iter().enumerate() {
+            let is_cursor_row = row_idx == self.cursor_row;
+
+            // Find actual text end in this row
+            let text_end = self.find_row_text_end(source_row);
+
+            // Create render row with terminal width
+            let mut render_row = vec![TerminalCell::default(); self.cols];
+            let copy_length = text_end.min(self.cols);
+
+            // Copy content up to terminal width or text end
+            if copy_length > 0 {
+                self.bulk_copy_cells(&source_row[..copy_length], &mut render_row[..copy_length]);
+            }
+
+            self.render_buffer.push(render_row);
+
+            // Track cursor position in render buffer
+            if is_cursor_row {
+                self.render_cursor_row = self.render_buffer.len() - 1;
+                self.render_cursor_col = self.cursor_col.min(self.cols);
+            }
+        }
+
+        self.render_buffer_dirty = false;
+    }
+
     pub fn new(rows: usize, cols: usize) -> Self {
         let mut main_buffer = VecDeque::with_capacity(MAX_HISTORY_LINES + rows);
         main_buffer.push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
@@ -363,6 +456,7 @@ impl TerminalState {
             main_buffer,
             render_buffer: Vec::new(),
             render_buffer_dirty: true,
+            incremental_update: false, // Start with full reflow
             cursor_row: 0,
             cursor_col: 0,
             render_cursor_row: 0,
@@ -379,6 +473,10 @@ impl TerminalState {
             main_buffer_backup: None,
             scroll_region_top: 0,
             scroll_region_bottom: rows - 1,
+            visible_start_row: 0,
+            visible_end_row: rows, // Initially show first 'rows' lines
+            last_render_update_time: None,
+            render_update_interval_ms: 33, // ~60 FPS (16ms interval)
         };
         state.update_render_buffer();
 
@@ -397,7 +495,8 @@ impl TerminalState {
             .push_back(vec![TerminalCell::default(); MAX_MAIN_BUFFER_COLS]);
         self.cursor_row = 0;
         self.cursor_col = 0;
-        self.mark_render_dirty();
+        self.incremental_update = false; // Full reflow required for clear
+        self.force_update_render_buffer(); // Clear screen needs immediate update
     }
 
     pub fn resize(&mut self, new_rows: usize, new_cols: usize) {
@@ -413,7 +512,8 @@ impl TerminalState {
         // Let the application (top, vim, etc.) handle resize by itself
 
         // When resizing, the entire buffer needs to be reflowed.
-        self.mark_render_dirty();
+        self.incremental_update = false; // Full reflow required for resize
+        self.force_update_render_buffer(); // Resize needs immediate update
 
         // Ensure cursor is within new bounds
         self.cursor_col = self.cursor_col.min(new_cols.saturating_sub(1));
@@ -429,6 +529,9 @@ impl TerminalState {
         // Update scroll region to match new terminal size
         self.scroll_region_top = 0;
         self.scroll_region_bottom = new_rows - 1;
+
+        // Update viewport to match new terminal size
+        self.visible_end_row = new_rows;
     }
 
     pub fn put_char(&mut self, ch: char) {
@@ -477,6 +580,7 @@ impl TerminalState {
         }
 
         self.cursor_col += char_width;
+        self.incremental_update = true; // Only current row needs reflow
         self.mark_render_dirty();
     }
 
@@ -505,6 +609,7 @@ impl TerminalState {
             }
         }
 
+        self.incremental_update = true; // Only affected rows need reflow
         self.mark_render_dirty();
     }
 

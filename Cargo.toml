@@ -10,3 +10,8 @@ vte = "^0.15"
 portable-pty = "^0.9.0"
 anyhow = "1.0"
 unicode-width = "0.2.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25"
+objc = "0.2"
+raw-window-handle = "0.6"
